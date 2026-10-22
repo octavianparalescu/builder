@@ -36,6 +36,9 @@ export default class InlinedStyles {
 
   ngOnChanges(changes) {
     if (changes.styles) {
+      this.styleElement ??= Array.from(
+        this.elRef.nativeElement.children as HTMLCollection
+      ).find((el) => el.tagName === 'STYLE') as HTMLStyleElement;
       if (this.styleElement) {
         this.styleElement.textContent = this.styles();
       } else {

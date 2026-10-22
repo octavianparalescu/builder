@@ -70,7 +70,7 @@ const dynamicComponentTemplate = (tagName) => {
   return `
 @Component({
   selector: 'dynamic-${tagName}, Dynamic${capitalize(tagName)}',
-  template: \` <${tagName} #v ${isVoidElement ? '' : '><ng-container *ngTemplateOutlet="builderChildren()"></ng-container>'}${isVoidElement ? '/>' : `</${tagName}>`} \`,
+  template: \` <${tagName} #v ${isVoidElement ? '/><ng-container *ngTemplateOutlet="builderChildren()"></ng-container>' : `><ng-container *ngTemplateOutlet="builderChildren()"></ng-container></${tagName}>`} \`,
   standalone: true,
   imports: [NgTemplateOutlet],
   styles: [':host { display: contents; }'],
