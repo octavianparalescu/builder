@@ -40,7 +40,9 @@ export default class InlinedStyles {
         this.elRef.nativeElement.children as HTMLCollection
       ).find((el) => el.tagName === 'STYLE') as HTMLStyleElement;
       if (this.styleElement) {
-        this.styleElement.textContent = this.styles();
+        if (this.styleElement.textContent !== this.styles()) {
+          this.styleElement.textContent = this.styles();
+        }
       } else {
         this.styleElement = this.renderer.createElement('style');
         this.renderer.setAttribute(this.styleElement, 'data-id', this.id());
