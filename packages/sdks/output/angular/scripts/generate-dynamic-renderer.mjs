@@ -59,9 +59,10 @@ const htmlElements = [
 const voidElements = ['img', 'input'];
 
 const dynamicRendererImports = [
-  `import { CommonModule } from '@angular/common';`,
+  `import { CommonModule, NgTemplateOutlet } from '@angular/common';`,
   `import { Component, ElementRef, input, viewChild, Renderer2, SimpleChanges, TemplateRef, ViewContainerRef, signal, computed } from '@angular/core';`,
   `import { isEmptyElement } from './dynamic-renderer.helpers';`,
+  `import BuilderChildrenProjector, { builderUseProjector, createBuilderChildInputs } from '../children-projector';`,
 ];
 
 const dynamicComponentTemplate = (tagName) => {
@@ -69,11 +70,13 @@ const dynamicComponentTemplate = (tagName) => {
   return `
 @Component({
   selector: 'dynamic-${tagName}, Dynamic${capitalize(tagName)}',
-  template: \` <${tagName} #v ${isVoidElement ? '' : '><ng-content></ng-content>'}${isVoidElement ? '/>' : `</${tagName}>`} \`,
+  template: \` <${tagName} #v ${isVoidElement ? '' : '><ng-container *ngTemplateOutlet="builderChildren()"></ng-container>'}${isVoidElement ? '/>' : `</${tagName}>`} \`,
   standalone: true,
+  imports: [NgTemplateOutlet],
   styles: [':host { display: contents; }'],
 })
 export class Dynamic${capitalize(tagName)} {
+  builderChildren = input<any>(undefined);
   attributes = input.required<any>();
   actionAttributes = input<any | undefined>();
   tagName = input<string | undefined>();
@@ -121,63 +124,59 @@ const generateComponents = () => {
     <ng-template #tagnameTemplate><ng-content></ng-content></ng-template>
     <ng-container *ngIf="!isEmptyElement(effectiveTagName())">
       <ng-container *ngIf="tagNameIsString()">
-        <ng-container
-          *ngComponentOutlet="
-            mappedComponent();
-            inputs: {
-              attributes: attributes(),
-              actionAttributes: actionAttributes(),
-              tagName: tagName()
-            };
-            content: myContent
-          "
-        ></ng-container>
+        @if (builderUseProjector(mappedComponent(), tagnameTemplate)) {
+          <builder-children-projector [component]="mappedComponent()" [inputs]="stringTagInputs()" [children]="tagnameTemplate"></builder-children-projector>
+        } @else {
+          <ng-container
+            *ngComponentOutlet="
+              mappedComponent();
+              inputs: builderChildInputs(mappedComponent(), stringTagInputs(), tagnameTemplate)
+            "
+          ></ng-container>
+        }
       </ng-container>
       <ng-container *ngIf="!tagNameIsString() && dynamicTagName() !== ''">
-        <ng-container
-          *ngComponentOutlet="
-            effectiveTagName();
-            inputs: {
-              attributes: attributes(),
-              actionAttributes: actionAttributes(),
-              tagName: tagName()
-            };
-            content: myContent
-          "
-        ></ng-container>
+        @if (builderUseProjector(effectiveTagName(), tagnameTemplate)) {
+          <builder-children-projector [component]="effectiveTagName()" [inputs]="stringTagInputs()" [children]="tagnameTemplate"></builder-children-projector>
+        } @else {
+          <ng-container
+            *ngComponentOutlet="
+              effectiveTagName();
+              inputs: builderChildInputs(effectiveTagName(), stringTagInputs(), tagnameTemplate)
+            "
+          ></ng-container>
+        }
       </ng-container>
        <ng-container *ngIf="!tagNameIsString() && dynamicTagName() === ''">
-        <ng-container
-          *ngComponentOutlet="
-            effectiveTagName();
-            inputs: {
-              attributes: attributes(),
-              actionAttributes: actionAttributes(),
-            };
-            content: myContent
-          "
-        ></ng-container>
+        @if (builderUseProjector(effectiveTagName(), tagnameTemplate)) {
+          <builder-children-projector [component]="effectiveTagName()" [inputs]="componentTagInputs()" [children]="tagnameTemplate"></builder-children-projector>
+        } @else {
+          <ng-container
+            *ngComponentOutlet="
+              effectiveTagName();
+              inputs: builderChildInputs(effectiveTagName(), componentTagInputs(), tagnameTemplate)
+            "
+          ></ng-container>
+        }
       </ng-container>
     </ng-container>
     <ng-container *ngIf="!!isEmptyElement(effectiveTagName())">
       <ng-container
         *ngComponentOutlet="
           effectiveTagName();
-          inputs: {
-            attributes: attributes(),
-            actionAttributes: actionAttributes(),
-          };
-          content: myContent
+          inputs: componentTagInputs()
         "
       ></ng-container>
     </ng-container>
   \`,
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, BuilderChildrenProjector],
   styles: [':host { display: contents; }'],
 })
 export default class DynamicRenderer {
   isEmptyElement = isEmptyElement;
+  protected readonly builderUseProjector = builderUseProjector;
+  protected readonly builderChildInputs = createBuilderChildInputs();
 
   TagName = input.required<any>();
   attributes = input.required<any>();
@@ -187,7 +186,16 @@ export default class DynamicRenderer {
   tagnameTemplateRef = viewChild<TemplateRef<any>>('tagnameTemplate');
   private _processedTagName = signal<any>(null);
 
-  myContent?: any[][];
+  stringTagInputs = computed(() => ({
+    attributes: this.attributes(),
+    actionAttributes: this.actionAttributes(),
+    tagName: this.tagName(),
+  }));
+
+  componentTagInputs = computed(() => ({
+    attributes: this.attributes(),
+    actionAttributes: this.actionAttributes(),
+  }));
 
   tagNameIsString = computed(() => typeof this.TagName() === 'string');
   
@@ -223,7 +231,6 @@ export default class DynamicRenderer {
     } else {
       this._processedTagName.set(this.TagName());
     }
-    this.myContent = [this.vcRef.createEmbeddedView(this.tagnameTemplateRef()).rootNodes];
   }
 }
 `;

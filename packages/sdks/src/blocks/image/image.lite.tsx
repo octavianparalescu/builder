@@ -13,6 +13,9 @@ useMetadata({
   rsc: {
     componentType: 'client',
   },
+  angular: {
+    selector: 'builder-image',
+  },
 });
 
 export default function Image(props: ImageProps) {

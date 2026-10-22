@@ -17,7 +17,8 @@ import {
       (click)="onClick() && onClick()($event)"
       (mouseenter)="onMouseEnter() && onMouseEnter()($event)"
     >
-      <ng-content></ng-content>
+      <ng-container *ngTemplateOutlet="builderChildren()"></ng-container
+      ><ng-content></ng-content>
     </div>
   `,
   standalone: true,
@@ -28,6 +29,7 @@ import {
   ],
 })
 export default class DynamicDiv {
+  builderChildren = input<any>(undefined);
   attributes = input<any>(undefined);
   actionAttributes = input<any>(undefined);
   BlockWrapperProps = input<any>(undefined);

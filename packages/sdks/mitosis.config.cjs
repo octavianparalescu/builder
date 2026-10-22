@@ -429,6 +429,122 @@ const FILTER_PROPS_METHOD = `filterPropsThatWrapperNeeds(allProps: any) {
     }, {});
   }`;
 
+const ANGULAR_CHILDREN_TEMPLATE_SITES = {
+  ComponentRef: {
+    path: '../../../children-projector',
+    children: 'builderChildrenIf(wrapperTemplate, blockChildrenToRender())',
+  },
+  InteractiveElement: {
+    path: '../../children-projector',
+    children: 'builderChildren()',
+  },
+  LiveEdit: {
+    path: './children-projector',
+    children: 'builderChildren()',
+  },
+  BlocksWrapper: {
+    path: '../children-projector',
+    children: 'blockswrapperTemplate',
+  },
+  EnableEditor: {
+    path: '../../children-projector',
+    children: 'contentwrapperTemplate',
+  },
+};
+
+/**
+ * Passes block children to dynamically created components as a `TemplateRef`
+ * (`builderChildren` input, rendered with `ngTemplateOutlet`) instead of DOM
+ * nodes projected through `ngComponentOutlet`'s `content`. Angular cannot
+ * hydrate projected DOM nodes (NG0503); a component without a
+ * `builderChildren` input still gets its children projected, inside
+ * `builder-children-projector`, which skips hydration for that subtree only.
+ *
+ * @type {Plugin}
+ */
+const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
+  code: {
+    post: (code, json) => {
+      if (json.name === 'DynamicRenderer') return code;
+      if (json.name === 'ContentComponent') {
+        const contentClass = /export default class ContentComponent\b[^{]*\{/;
+        if (!contentClass.test(code)) {
+          throw new Error('ContentComponent: class declaration not found');
+        }
+        code = code.replace(
+          contentClass,
+          '$&\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  ngAfterViewChecked() {\n    if (this.builderIsServer) markUnhydratableMarkup(this.builderHostRef.nativeElement);\n  }\n'
+        );
+        return `import { inject as builderInject, ElementRef as BuilderElementRef, PLATFORM_ID as BUILDER_PLATFORM_ID } from "@angular/core";\nimport { isPlatformServer } from "@angular/common";\nimport { markUnhydratableMarkup } from "../children-projector";\n${code}`;
+      }
+      const ngContent = /<ng-content><\/ng-content\s*>/g;
+      if (ngContent.test(code)) {
+        code = code.replace(
+          ngContent,
+          '<ng-container *ngTemplateOutlet="builderChildren()"></ng-container>$&'
+        );
+        const classDeclaration = new RegExp(
+          `export default class ${json.name}\\b[^{]*\\{`
+        );
+        if (!classDeclaration.test(code)) {
+          throw new Error(`${json.name}: class declaration not found`);
+        }
+        code = code.replace(
+          classDeclaration,
+          '$&\n  builderChildren = input<any>(undefined);\n'
+        );
+        if (
+          !/import \{[^}]*\binput\b[^}]*\} from "@angular\/core"/.test(code)
+        ) {
+          code = `import { input } from "@angular/core";\n${code}`;
+        }
+      }
+
+      const site = ANGULAR_CHILDREN_TEMPLATE_SITES[json.name];
+      if (!site) {
+        if (code.includes('content: myContent()')) {
+          throw new Error(`${json.name}: unhandled dynamic component`);
+        }
+        return code;
+      }
+
+      const outlet =
+        /<ng-container\s*\*ngComponentOutlet="\s*([^;"]+?);\s*inputs:\s*([^;"]+?);\s*content: myContent\(\);\s*"\s*>\s*<\/ng-container>/g;
+      let outlets = 0;
+      code = code.replace(outlet, (_, component, inputs) => {
+        outlets++;
+        const children = site.children;
+        return `@if (builderUseProjector(${component}, ${children})) {<builder-children-projector [component]="${component}" [inputs]="${inputs}" [children]="${children}"></builder-children-projector>} @else {<ng-container *ngComponentOutlet="${component}; inputs: builderChildInputs(${component}, ${inputs}, ${children})"></ng-container>}`;
+      });
+      if (outlets !== 1) {
+        throw new Error(
+          `${json.name}: expected 1 dynamic outlet, found ${outlets}`
+        );
+      }
+
+      const updateView =
+        /_updateView\(\) \{\s*this\.myContent\.set\(\[\s*this\.viewContainer\.createEmbeddedView\(this\.\w+\(\)\)\s*\.rootNodes,?\s*\]\);\s*\}/;
+      if (!updateView.test(code)) {
+        throw new Error(`${json.name}: _updateView not found`);
+      }
+      code = code.replace(updateView, '_updateView() {}');
+
+      if (!code.includes('imports: [CommonModule')) {
+        throw new Error(`${json.name}: component imports not found`);
+      }
+      code = code.replace(
+        'imports: [CommonModule',
+        'imports: [CommonModule, BuilderChildrenProjector'
+      );
+      code = code.replace(
+        new RegExp(`export default class ${json.name}\\b[^{]*\\{`),
+        '$&\n  protected readonly builderUseProjector = builderUseProjector;\n  protected readonly builderChildrenIf = builderChildrenIf;\n  protected readonly builderChildInputs = createBuilderChildInputs();\n'
+      );
+      return `import BuilderChildrenProjector, { builderChildrenIf, builderUseProjector, createBuilderChildInputs } from "${site.path}";\n${code}`;
+    },
+  },
+});
+
 /**
  * @type {Plugin}
  */
@@ -588,6 +704,7 @@ module.exports = {
         INJECT_ENABLE_EDITOR_ON_EVENT_HOOKS_PLUGIN,
         ANGULAR_INJECT_UPDATE_VIEW_CODE,
         ANGULAR_NO_WRAP_INTERACTIVE_ELEMENT_PLUGIN,
+        ANGULAR_HYDRATABLE_CHILDREN_PLUGIN,
       ],
     },
     solid: {
