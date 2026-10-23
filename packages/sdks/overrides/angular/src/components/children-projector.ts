@@ -24,6 +24,23 @@ const PARSER_SPECIAL_TAGS = new Set(
   )
 );
 
+const TABLE_CHILD_TAGS: Record<string, string[]> = {
+  table: [
+    'caption',
+    'colgroup',
+    'thead',
+    'tbody',
+    'tfoot',
+    'script',
+    'template',
+    'style',
+  ],
+  thead: ['tr', 'script', 'template'],
+  tbody: ['tr', 'script', 'template'],
+  tfoot: ['tr', 'script', 'template'],
+  tr: ['td', 'th', 'script', 'template'],
+};
+
 const closestTag = (el: Element | null, tagName: string) => {
   while (el && el.tagName.toUpperCase() !== tagName.toUpperCase()) {
     el = el.parentElement;
@@ -33,8 +50,9 @@ const closestTag = (el: Element | null, tagName: string) => {
 
 /**
  * The browser's HTML parser re-parents nodes it cannot nest (a `<p>` holding a
- * `<div>`, nested headings/links/buttons/forms), so server HTML with such nesting cannot
- * hydrate. Skips hydration for the closest block that contains the damage:
+ * `<div>`, nested headings/links/buttons/forms, non-table elements inside table
+ * parts), so server HTML with such nesting cannot hydrate. Skips hydration for the
+ * closest block that contains the damage:
  * nothing is projected into a block from outside, so its subtree can be skipped.
  */
 export const markUnhydratableMarkup = (root: Element) => {
@@ -50,6 +68,20 @@ export const markUnhydratableMarkup = (root: Element) => {
   )) {
     const outer = closestTag(inner.parentElement, inner.tagName);
     if (outer) invalid.push(outer);
+  }
+  for (const part of Array.from(
+    root.querySelectorAll(Object.keys(TABLE_CHILD_TAGS).join(','))
+  )) {
+    const allowed = TABLE_CHILD_TAGS[part.tagName.toLowerCase()];
+    const table = closestTag(part, 'TABLE');
+    if (
+      table &&
+      Array.from(part.children).some(
+        (child) => !allowed.includes(child.tagName.toLowerCase())
+      )
+    ) {
+      invalid.push(table);
+    }
   }
   for (const el of invalid) {
     let boundary = el.parentElement;

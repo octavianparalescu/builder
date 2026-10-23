@@ -533,6 +533,15 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
       }
       code = code.replace(updateView, '_updateView() {}');
 
+      const viewContainerParam = /private viewContainer: ViewContainerRef,?\s*/;
+      if (!viewContainerParam.test(code)) {
+        throw new Error(`${json.name}: viewContainer injection not found`);
+      }
+      code = code.replace(viewContainerParam, '');
+      if (code.includes('this.viewContainer')) {
+        throw new Error(`${json.name}: viewContainer still used`);
+      }
+
       if (!code.includes('imports: [CommonModule')) {
         throw new Error(`${json.name}: component imports not found`);
       }
