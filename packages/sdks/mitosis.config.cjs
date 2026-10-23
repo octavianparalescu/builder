@@ -546,6 +546,77 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
 });
 
 /**
+ * Opt-in `blockRenderer` input on `builder-content`: a component that receives
+ * each top-level block of the page as `blockTemplate` (render it with
+ * `ngTemplateOutlet`, context `$implicit: block`) plus the `block` itself, so the
+ * app can wrap blocks, e.g. in `@defer (hydrate ...)`, without the SDK
+ * depending on a newer Angular. Without it, blocks render as before.
+ *
+ * @type {Plugin}
+ */
+const ANGULAR_BLOCK_RENDERER_PLUGIN = () => ({
+  code: {
+    post: (code, json) => {
+      const addInput = (name) => {
+        const classDeclaration = new RegExp(
+          `export default class ${name}\\b[^{]*\\{`
+        );
+        if (!classDeclaration.test(code)) {
+          throw new Error(`${name}: class declaration not found`);
+        }
+        code = code.replace(
+          classDeclaration,
+          '$&\n  blockRenderer = input<any>(undefined);\n'
+        );
+      };
+      if (json.name === 'ContentVariants') {
+        if (!code.includes('<content-component')) {
+          throw new Error('ContentVariants: <content-component> not found');
+        }
+        code = code.replace(
+          /<content-component\s/g,
+          '<content-component [blockRenderer]="blockRenderer()" '
+        );
+        addInput('ContentVariants');
+        return code;
+      }
+      if (json.name === 'ContentComponent') {
+        if (!/<blocks\s/.test(code)) {
+          throw new Error('ContentComponent: <blocks> not found');
+        }
+        code = code.replace(
+          /<blocks\s/,
+          '<blocks [blockRenderer]="isNestedRender() ? undefined : blockRenderer()" '
+        );
+        addInput('ContentComponent');
+        return code;
+      }
+      if (json.name !== 'Blocks') return code;
+      const block = /<block\s+\[block\]="block"([\s\S]*?)><\/block>/;
+      const match = code.match(block);
+      if (!match) {
+        throw new Error('Blocks: block element not found');
+      }
+      const bindings = match[1];
+      code = code.replace(
+        block,
+        (el) =>
+          `@if (blockRenderer() && !parent()) {<ng-container *ngComponentOutlet="blockRenderer(); inputs: { blockTemplate: builderBlockTemplate, block: block }"></ng-container>} @else {${el}}`
+      );
+      if (!code.includes('template: `<blocks-wrapper')) {
+        throw new Error('Blocks: template start not found');
+      }
+      code = code.replace(
+        'template: `<blocks-wrapper',
+        `template: \`<ng-template #builderBlockTemplate let-block><block [block]="block"${bindings}></block></ng-template><blocks-wrapper`
+      );
+      addInput('Blocks');
+      return code;
+    },
+  },
+});
+
+/**
  * @type {Plugin}
  */
 const ANGULAR_NO_WRAP_INTERACTIVE_ELEMENT_PLUGIN = () => ({
@@ -705,6 +776,7 @@ module.exports = {
         ANGULAR_INJECT_UPDATE_VIEW_CODE,
         ANGULAR_NO_WRAP_INTERACTIVE_ELEMENT_PLUGIN,
         ANGULAR_HYDRATABLE_CHILDREN_PLUGIN,
+        ANGULAR_BLOCK_RENDERER_PLUGIN,
       ],
     },
     solid: {
