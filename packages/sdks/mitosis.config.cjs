@@ -437,6 +437,7 @@ const ANGULAR_CHILDREN_TEMPLATE_SITES = {
   InteractiveElement: {
     path: '../../children-projector',
     children: 'builderChildren()',
+    legacyInPlace: true,
   },
   LiveEdit: {
     path: './children-projector',
@@ -514,7 +515,10 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
       code = code.replace(outlet, (_, component, inputs) => {
         outlets++;
         const children = site.children;
-        return `@if (builderUseProjector(${component}, ${children})) {<builder-children-projector [component]="${component}" [inputs]="${inputs}" [children]="${children}"></builder-children-projector>} @else {<ng-container *ngComponentOutlet="${component}; inputs: builderChildInputs(${component}, ${inputs}, ${children})"></ng-container>}`;
+        const legacy = site.legacyInPlace
+          ? `<ng-container [builderLegacyChildren]="${children}" #builderLegacy="builderLegacyChildren"></ng-container><ng-template [ngComponentOutlet]="${component}" [ngComponentOutletInputs]="${inputs}" [ngComponentOutletContent]="builderLegacy.nodes"></ng-template>`
+          : `<builder-children-projector [component]="${component}" [inputs]="${inputs}" [children]="${children}"></builder-children-projector>`;
+        return `@if (builderUseProjector(${component}, ${children})) {${legacy}} @else {<ng-container *ngComponentOutlet="${component}; inputs: builderChildInputs(${component}, ${inputs}, ${children})"></ng-container>}`;
       });
       if (outlets !== 1) {
         throw new Error(
@@ -534,13 +538,13 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
       }
       code = code.replace(
         'imports: [CommonModule',
-        'imports: [CommonModule, BuilderChildrenProjector'
+        'imports: [CommonModule, BuilderChildrenProjector, BuilderLegacyChildren'
       );
       code = code.replace(
         new RegExp(`export default class ${json.name}\\b[^{]*\\{`),
         '$&\n  protected readonly builderUseProjector = builderUseProjector;\n  protected readonly builderChildrenIf = builderChildrenIf;\n  protected readonly builderChildInputs = createBuilderChildInputs();\n'
       );
-      return `import BuilderChildrenProjector, { builderChildrenIf, builderUseProjector, createBuilderChildInputs } from "${site.path}";\n${code}`;
+      return `import BuilderChildrenProjector, { BuilderLegacyChildren, builderChildrenIf, builderUseProjector, createBuilderChildInputs } from "${site.path}";\n${code}`;
     },
   },
 });

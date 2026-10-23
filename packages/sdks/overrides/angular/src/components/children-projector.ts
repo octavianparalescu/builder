@@ -1,9 +1,13 @@
-import { CommonModule } from '@angular/common';
+import { CommonModule, isPlatformServer } from '@angular/common';
 import {
   Component,
+  Directive,
+  ElementRef,
+  PLATFORM_ID,
   TemplateRef,
   ViewChild,
   ViewContainerRef,
+  inject,
   input,
   reflectComponentType,
   signal,
@@ -135,6 +139,45 @@ export default class BuilderChildrenProjector {
       this.nodes.set([
         this.childrenAnchor.createEmbeddedView(children).rootNodes,
       ]);
+    }
+  }
+}
+
+/**
+ * In-place variant of `builder-children-projector` for a component template
+ * root: renders the children next to itself for projection into the sibling
+ * `ngComponentOutlet`, and on the server marks the enclosing component host
+ * `ngSkipHydration`, so no wrapper element is added around the target.
+ */
+@Directive({
+  selector: '[builderLegacyChildren]',
+  standalone: true,
+  exportAs: 'builderLegacyChildren',
+})
+export class BuilderLegacyChildren {
+  children = input<TemplateRef<any> | undefined>(undefined, {
+    alias: 'builderLegacyChildren',
+  });
+  nodes: any[][] | undefined;
+
+  private readonly viewContainer = inject(ViewContainerRef);
+  private readonly anchor = inject(ElementRef);
+  private readonly isServer = isPlatformServer(inject(PLATFORM_ID));
+  private rendered: TemplateRef<any> | undefined;
+
+  ngOnChanges() {
+    const children = this.children();
+    if (children === this.rendered) return;
+    this.rendered = children;
+    this.viewContainer.clear();
+    this.nodes = children
+      ? [this.viewContainer.createEmbeddedView(children).rootNodes]
+      : undefined;
+    if (this.isServer) {
+      (this.anchor.nativeElement as Node).parentElement?.setAttribute(
+        'ngSkipHydration',
+        ''
+      );
     }
   }
 }
