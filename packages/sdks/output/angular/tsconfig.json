@@ -16,7 +16,7 @@
     "experimentalDecorators": true,
     "noImplicitAny": false,
     "strictNullChecks": false,
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "importHelpers": true,
     "paths": {
       "placeholder-runtime": [
