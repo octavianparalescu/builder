@@ -546,6 +546,48 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
 });
 
 /**
+ * Server-renders every top-level block of a page but hydrates each one only
+ * when it scrolls into view. Nested renders (symbols) and the visual editor or
+ * preview keep eager hydration.
+ *
+ * @type {Plugin}
+ */
+const ANGULAR_DEFER_TOP_LEVEL_BLOCKS_PLUGIN = () => ({
+  code: {
+    post: (code, json) => {
+      if (json.name === 'ContentComponent') {
+        if (!/<blocks\s/.test(code)) {
+          throw new Error('ContentComponent: <blocks> not found');
+        }
+        return code.replace(
+          /<blocks\s/,
+          '<blocks [builderDeferBlocks]="!isNestedRender()" '
+        );
+      }
+      if (json.name !== 'Blocks') return code;
+      const block = /<block\s+\[block\]="block"[\s\S]*?><\/block>/;
+      if (!block.test(code)) {
+        throw new Error('Blocks: block element not found');
+      }
+      code = code.replace(
+        block,
+        (el) =>
+          `@if (builderDefer()) {@defer (on immediate; hydrate when builderVisible(block.id); hydrate on interaction) {${el}}} @else {${el}}`
+      );
+      const classDeclaration = /export default class Blocks\b[^{]*\{/;
+      if (!classDeclaration.test(code)) {
+        throw new Error('Blocks: class declaration not found');
+      }
+      code = code.replace(
+        classDeclaration,
+        '$&\n  builderDeferBlocks = input<boolean>(false);\n  protected readonly builderDefer = builderComputed(\n    () => !!this.builderDeferBlocks() && !this.parent() && !isEditingOrPreviewing()\n  );\n  protected readonly builderVisible = createBuilderBlockVisibility(() =>\n    (this.blocks() ?? []).map((block) => block.id)\n  );\n'
+      );
+      return `import { computed as builderComputed } from "@angular/core";\nimport { isEditingOrPreviewing } from "../../functions/is-editing-or-previewing";\nimport { createBuilderBlockVisibility } from "../children-projector";\n${code}`;
+    },
+  },
+});
+
+/**
  * @type {Plugin}
  */
 const ANGULAR_NO_WRAP_INTERACTIVE_ELEMENT_PLUGIN = () => ({
@@ -705,6 +747,7 @@ module.exports = {
         ANGULAR_INJECT_UPDATE_VIEW_CODE,
         ANGULAR_NO_WRAP_INTERACTIVE_ELEMENT_PLUGIN,
         ANGULAR_HYDRATABLE_CHILDREN_PLUGIN,
+        ANGULAR_DEFER_TOP_LEVEL_BLOCKS_PLUGIN,
       ],
     },
     solid: {

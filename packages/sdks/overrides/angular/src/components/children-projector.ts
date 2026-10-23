@@ -1,9 +1,13 @@
 import { CommonModule } from '@angular/common';
 import {
   Component,
+  DestroyRef,
+  ElementRef,
   TemplateRef,
   ViewChild,
   ViewContainerRef,
+  afterNextRender,
+  inject,
   input,
   reflectComponentType,
   signal,
@@ -63,6 +67,47 @@ export const markUnhydratableMarkup = (root: Element) => {
       ''
     );
   }
+};
+
+/**
+ * Tracks which top-level blocks have come near the viewport, by their server-
+ * rendered `[builder-id]` element, for `@defer (hydrate when ...)`. Angular's own
+ * `hydrate on viewport` observes the `<block>` host, which is `display: contents`
+ * and never intersects.
+ */
+export const createBuilderBlockVisibility = (ids: () => string[]) => {
+  const host = inject(ElementRef).nativeElement as HTMLElement;
+  const destroyRef = inject(DestroyRef);
+  const visible = signal<ReadonlySet<string>>(new Set());
+  afterNextRender(() => {
+    if (typeof IntersectionObserver === 'undefined') {
+      visible.set(new Set(ids()));
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const next = new Set(visible());
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          next.add(entry.target.getAttribute('builder-id')!);
+          observer.unobserve(entry.target);
+        }
+        if (next.size !== visible().size) visible.set(next);
+      },
+      { rootMargin: '200px' }
+    );
+    const unobservable: string[] = [];
+    for (const id of ids()) {
+      const el = host.querySelector(`[builder-id="${id}"]`);
+      if (el) observer.observe(el);
+      else unobservable.push(id);
+    }
+    if (unobservable.length) {
+      visible.set(new Set([...visible(), ...unobservable]));
+    }
+    destroyRef.onDestroy(() => observer.disconnect());
+  });
+  return (id: string) => visible().has(id);
 };
 
 const acceptsChildrenCache = new WeakMap<object, boolean>();
