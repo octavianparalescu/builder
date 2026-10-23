@@ -474,7 +474,7 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
         }
         code = code.replace(
           contentClass,
-          '$&\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  ngAfterViewChecked() {\n    if (this.builderIsServer) markUnhydratableMarkup(this.builderHostRef.nativeElement);\n  }\n'
+          '$&\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  ngAfterViewChecked() {\n    if (this.builderIsServer && !this.isNestedRender()) markUnhydratableMarkup(this.builderHostRef.nativeElement);\n  }\n'
         );
         return `import { inject as builderInject, ElementRef as BuilderElementRef, PLATFORM_ID as BUILDER_PLATFORM_ID } from "@angular/core";\nimport { isPlatformServer } from "@angular/common";\nimport { markUnhydratableMarkup } from "../children-projector";\n${code}`;
       }

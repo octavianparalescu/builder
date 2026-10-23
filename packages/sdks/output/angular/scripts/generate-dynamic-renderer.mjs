@@ -57,6 +57,7 @@ const htmlElements = [
 ];
 
 const voidElements = ['img', 'input'];
+const rawTextElements = ['iframe'];
 
 const dynamicRendererImports = [
   `import { CommonModule, NgTemplateOutlet } from '@angular/common';`,
@@ -70,7 +71,7 @@ const dynamicComponentTemplate = (tagName) => {
   return `
 @Component({
   selector: 'dynamic-${tagName}, Dynamic${capitalize(tagName)}',
-  template: \` <${tagName} #v ${isVoidElement ? '/><ng-container *ngTemplateOutlet="builderChildren()"></ng-container>' : `><ng-container *ngTemplateOutlet="builderChildren()"></ng-container></${tagName}>`} \`,
+  template: \` <${tagName} #v ${isVoidElement ? '/><ng-container *ngTemplateOutlet="builderChildren()"></ng-container>' : rawTextElements.includes(tagName) ? `></${tagName}>` : `><ng-container *ngTemplateOutlet="builderChildren()"></ng-container></${tagName}>`} \`,
   standalone: true,
   imports: [NgTemplateOutlet],
   styles: [':host { display: contents; }'],
@@ -183,7 +184,6 @@ export default class DynamicRenderer {
   actionAttributes = input.required<any>();
   tagName = signal<string>('');
 
-  tagnameTemplateRef = viewChild<TemplateRef<any>>('tagnameTemplate');
   private _processedTagName = signal<any>(null);
 
   stringTagInputs = computed(() => ({
@@ -209,8 +209,6 @@ export default class DynamicRenderer {
     }
     return null;
   });
-
-  constructor(private vcRef: ViewContainerRef) {}
 
   private tagComponentMap: { [key: string]: any } = {
     ${htmlElements.map((el) => `'${el}': Dynamic${capitalize(el)}`).join(',\n    ')}
