@@ -14,7 +14,7 @@ useMetadata({
     componentType: 'client',
   },
   angular: {
-    selector: 'builder-image',
+    selector: 'builder-image, image',
   },
 });
 

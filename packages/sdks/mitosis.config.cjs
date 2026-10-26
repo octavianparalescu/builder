@@ -460,6 +460,9 @@ const ANGULAR_CHILDREN_TEMPLATE_SITES = {
  * hydrate projected DOM nodes (NG0503); a component without a
  * `builderChildren` input still gets its children projected, inside
  * `builder-children-projector`, which skips hydration for that subtree only.
+ * Content hydrates only with `<builder-content [hydrate]="true">`, and never
+ * when it has A/B variations: the browser picks the variant from a cookie, so
+ * the server HTML may hold another variant.
  *
  * @type {Plugin}
  */
@@ -467,6 +470,21 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
   code: {
     post: (code, json) => {
       if (json.name === 'DynamicRenderer') return code;
+      if (json.name === 'ContentVariants') {
+        if (!code.includes('<content-component')) {
+          throw new Error('ContentVariants: <content-component> not found');
+        }
+        const variantsClass = /export default class ContentVariants\b[^{]*\{/;
+        if (!variantsClass.test(code)) {
+          throw new Error('ContentVariants: class declaration not found');
+        }
+        return code
+          .replace(
+            /<content-component\s/g,
+            '<content-component [hydrate]="hydrate()" '
+          )
+          .replace(variantsClass, '$&\n  hydrate = input<boolean>(false);\n');
+      }
       if (json.name === 'ContentComponent') {
         const contentClass = /export default class ContentComponent\b[^{]*\{/;
         if (!contentClass.test(code)) {
@@ -474,7 +492,7 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
         }
         code = code.replace(
           contentClass,
-          '$&\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  ngAfterViewChecked() {\n    if (this.builderIsServer && !this.isNestedRender()) markUnhydratableMarkup(this.builderHostRef.nativeElement);\n  }\n'
+          '$&\n  hydrate = input<boolean>(false);\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  ngAfterViewChecked() {\n    if (!this.builderIsServer) return;\n    const host = this.builderHostRef.nativeElement;\n    if (Object.keys(this.content()?.variations || {}).length || (!this.isNestedRender() && !this.hydrate())) host.setAttribute("ngSkipHydration", "");\n    else if (!this.isNestedRender()) markUnhydratableMarkup(host);\n  }\n'
         );
         return `import { inject as builderInject, ElementRef as BuilderElementRef, PLATFORM_ID as BUILDER_PLATFORM_ID } from "@angular/core";\nimport { isPlatformServer } from "@angular/common";\nimport { markUnhydratableMarkup } from "../children-projector";\n${code}`;
       }

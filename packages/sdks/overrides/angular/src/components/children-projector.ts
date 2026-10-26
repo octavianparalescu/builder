@@ -1,10 +1,10 @@
 import { CommonModule, isPlatformServer } from '@angular/common';
+import type { TemplateRef } from '@angular/core';
 import {
   Component,
   Directive,
   ElementRef,
   PLATFORM_ID,
-  TemplateRef,
   ViewChild,
   ViewContainerRef,
   inject,
