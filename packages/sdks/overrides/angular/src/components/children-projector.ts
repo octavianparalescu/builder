@@ -44,6 +44,26 @@ const TABLE_CHILD_TAGS: Record<string, string[]> = {
 
 const SELECT_CHILD_TAGS = ['option', 'optgroup', 'hr', 'script', 'template'];
 
+const TABLE_PART_PARENTS: Record<string, string[]> = {
+  caption: ['table'],
+  colgroup: ['table'],
+  thead: ['table'],
+  tbody: ['table'],
+  tfoot: ['table'],
+  col: ['colgroup'],
+  tr: ['thead', 'tbody', 'tfoot'],
+  td: ['tr'],
+  th: ['tr'],
+};
+
+const IMPLIED_END_ITEMS: Record<string, string[]> = {
+  li: ['li'],
+  dd: ['dd', 'dt'],
+  dt: ['dd', 'dt'],
+};
+
+const LIST_ITEM_SCOPE_EXCEPTIONS = ['address', 'div', 'p'];
+
 const closestTag = (el: Element | null, tagName: string) => {
   while (el && el.tagName.toUpperCase() !== tagName.toUpperCase()) {
     el = el.parentElement;
@@ -53,14 +73,19 @@ const closestTag = (el: Element | null, tagName: string) => {
 
 /**
  * The browser's HTML parser re-parents nodes it cannot nest (a `<p>` holding a
- * `<div>`, nested headings/links/buttons/forms, non-table elements inside table
- * parts), so server HTML with such nesting cannot hydrate. Skips hydration for the
- * closest block that contains the damage:
- * nothing is projected into a block from outside, so its subtree can be skipped.
+ * `<div>`, nested headings/links/buttons/forms/list items, non-table elements
+ * inside table parts, table parts outside their table), so server HTML with
+ * such nesting cannot hydrate. A table, select or stray table part only
+ * changes nodes inside its own block. An element closed early (`<p>`, list
+ * items, headings, links, buttons, forms) lets the end tags that follow close
+ * the wrapper elements around it up to the nearest special element, so the
+ * block around that element is skipped. Nothing is projected into a block from
+ * outside, so its subtree can be skipped.
  */
 export const markUnhydratableMarkup = (root: Element) => {
   const parserSpecialTags = new Set(PARSER_SPECIAL_TAGS.split(','));
   const invalid: Element[] = [];
+  const contained: Element[] = [];
   for (const p of Array.from(root.querySelectorAll('p'))) {
     if (p.querySelector(P_CLOSING_TAGS)) invalid.push(p);
   }
@@ -73,13 +98,46 @@ export const markUnhydratableMarkup = (root: Element) => {
     const outer = closestTag(inner.parentElement, inner.tagName);
     if (outer) invalid.push(outer);
   }
+  for (const part of Array.from(
+    root.querySelectorAll(Object.keys(TABLE_PART_PARENTS).join(','))
+  )) {
+    const parent = part.parentElement?.tagName.toLowerCase();
+    if (
+      !parent ||
+      !TABLE_PART_PARENTS[part.tagName.toLowerCase()].includes(parent)
+    ) {
+      contained.push(closestTag(part, 'TABLE') ?? part);
+    }
+  }
+  for (const item of Array.from(
+    root.querySelectorAll(Object.keys(IMPLIED_END_ITEMS).join(','))
+  )) {
+    const closes = IMPLIED_END_ITEMS[item.tagName.toLowerCase()];
+    for (
+      let el = item.parentElement;
+      el && el !== root;
+      el = el.parentElement
+    ) {
+      const tag = el.tagName.toLowerCase();
+      if (closes.includes(tag)) {
+        invalid.push(el);
+        break;
+      }
+      if (
+        parserSpecialTags.has(tag) &&
+        !LIST_ITEM_SCOPE_EXCEPTIONS.includes(tag)
+      ) {
+        break;
+      }
+    }
+  }
   for (const select of Array.from(root.querySelectorAll('select'))) {
     if (
       Array.from(select.children).some(
         (child) => !SELECT_CHILD_TAGS.includes(child.tagName.toLowerCase())
       )
     ) {
-      invalid.push(select);
+      contained.push(select);
     }
   }
   for (const part of Array.from(
@@ -93,7 +151,7 @@ export const markUnhydratableMarkup = (root: Element) => {
         (child) => !allowed.includes(child.tagName.toLowerCase())
       )
     ) {
-      invalid.push(table);
+      contained.push(table);
     }
   }
   for (const el of invalid) {
@@ -105,8 +163,10 @@ export const markUnhydratableMarkup = (root: Element) => {
     ) {
       boundary = boundary.parentElement;
     }
-    const block =
-      boundary && boundary !== root ? closestTag(boundary, 'BLOCK') : null;
+    contained.push(boundary && boundary !== root ? boundary : root);
+  }
+  for (const el of contained) {
+    const block = closestTag(el, 'BLOCK');
     (block && root.contains(block) ? block : root).setAttribute(
       'ngSkipHydration',
       ''
