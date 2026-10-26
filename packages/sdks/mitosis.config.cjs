@@ -694,9 +694,9 @@ const ANGULAR_BLOCK_RENDERER_PLUGIN = () => ({
         if (!classDeclaration.test(code)) {
           throw new Error(`${name}: class declaration not found`);
         }
-        code = `import type { Type as BuilderType } from "@angular/core";\n${code.replace(
+        code = `import type { InputSignal as BuilderInputSignal } from "@angular/core";\nimport type { BuilderBlockRenderer } from "../children-projector";\n${code.replace(
           classDeclaration,
-          '$&\n  blockRenderer = input<BuilderType<unknown> | undefined>(undefined);\n'
+          '$&\n  blockRenderer: BuilderInputSignal<BuilderBlockRenderer> = input<BuilderBlockRenderer>(undefined);\n'
         )}`;
       };
       if (json.name === 'ContentVariants') {

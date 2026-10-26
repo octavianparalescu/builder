@@ -116,6 +116,8 @@ export const BUILDER_HYDRATION = new InjectionToken<BuilderHydration>(
 
 export type BuilderHydrating = () => BuilderHydration | null;
 
+export type BuilderBlockRenderer = Type<unknown> | undefined;
+
 export const BUILDER_HYDRATING = new InjectionToken<BuilderHydrating>(
   'BUILDER_HYDRATING'
 );
