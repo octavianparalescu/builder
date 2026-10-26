@@ -1,5 +1,5 @@
 import { CommonModule, isPlatformServer } from '@angular/common';
-import type { Signal, TemplateRef } from '@angular/core';
+import type { TemplateRef, Type } from '@angular/core';
 import {
   Component,
   Directive,
@@ -21,11 +21,8 @@ const P_CLOSING_TAGS =
 
 const HEADING_TAGS = 'h1,h2,h3,h4,h5,h6';
 
-const PARSER_SPECIAL_TAGS = new Set(
-  'address,applet,area,article,aside,base,basefont,bgsound,blockquote,body,br,button,caption,center,col,colgroup,dd,details,dir,div,dl,dt,embed,fieldset,figcaption,figure,footer,form,frame,frameset,h1,h2,h3,h4,h5,h6,head,header,hgroup,hr,html,iframe,img,input,keygen,li,link,listing,main,marquee,menu,meta,nav,noembed,noframes,noscript,object,ol,p,param,plaintext,pre,script,section,select,source,style,summary,table,tbody,td,template,textarea,tfoot,th,thead,title,tr,track,ul,wbr,xmp'.split(
-    ','
-  )
-);
+const PARSER_SPECIAL_TAGS =
+  'address,applet,area,article,aside,base,basefont,bgsound,blockquote,body,br,button,caption,center,col,colgroup,dd,details,dir,div,dl,dt,embed,fieldset,figcaption,figure,footer,form,frame,frameset,h1,h2,h3,h4,h5,h6,head,header,hgroup,hr,html,iframe,img,input,keygen,li,link,listing,main,marquee,menu,meta,nav,noembed,noframes,noscript,object,ol,p,param,plaintext,pre,script,section,select,source,style,summary,table,tbody,td,template,textarea,tfoot,th,thead,title,tr,track,ul,wbr,xmp';
 
 const TABLE_CHILD_TAGS: Record<string, string[]> = {
   table: [
@@ -59,6 +56,7 @@ const closestTag = (el: Element | null, tagName: string) => {
  * nothing is projected into a block from outside, so its subtree can be skipped.
  */
 export const markUnhydratableMarkup = (root: Element) => {
+  const parserSpecialTags = new Set(PARSER_SPECIAL_TAGS.split(','));
   const invalid: Element[] = [];
   for (const p of Array.from(root.querySelectorAll('p'))) {
     if (p.querySelector(P_CLOSING_TAGS)) invalid.push(p);
@@ -91,7 +89,7 @@ export const markUnhydratableMarkup = (root: Element) => {
     while (
       boundary &&
       boundary !== root &&
-      !PARSER_SPECIAL_TAGS.has(boundary.tagName.toLowerCase())
+      !parserSpecialTags.has(boundary.tagName.toLowerCase())
     ) {
       boundary = boundary.parentElement;
     }
@@ -104,30 +102,58 @@ export const markUnhydratableMarkup = (root: Element) => {
   }
 };
 
-export const BUILDER_HYDRATING = new InjectionToken<Signal<boolean>>(
+type BuilderHydrationOutlet = ReturnType<typeof createHydratingOutlet>;
+
+export interface BuilderHydration {
+  createOutlet: () => BuilderHydrationOutlet;
+  markUnhydratableMarkup: (root: Element) => void;
+  skipHydrationWhileEditing: (host: Element) => void;
+}
+
+export const BUILDER_HYDRATION = new InjectionToken<BuilderHydration>(
+  'BUILDER_HYDRATION'
+);
+
+export type BuilderHydrating = () => BuilderHydration | null;
+
+export const BUILDER_HYDRATING = new InjectionToken<BuilderHydrating>(
   'BUILDER_HYDRATING'
 );
 
-export const isBuilderHydrating = (
-  parent: Signal<boolean> | null,
-  nested: boolean | undefined,
-  hydrate: boolean,
-  content: { variations?: object } | undefined
-) =>
-  (parent ? parent() : !nested) &&
-  (!!nested || hydrate) &&
-  !Object.keys(content?.variations || {}).length &&
-  !isEditing() &&
-  !isPreviewing();
-
-export const injectBuilderHydrating = () => {
-  const hydrating = inject(BUILDER_HYDRATING, { optional: true });
-  let latched: boolean | undefined;
-  return () => (latched ??= !!hydrating?.());
+export const createBuilderHydrating = (
+  compute: BuilderHydrating
+): BuilderHydrating => {
+  let value: BuilderHydration | null | undefined;
+  return () => (value === undefined ? (value = compute()) : value);
 };
 
-export const builderTwin = (component: any) =>
-  component?.builderHydratingTwin?.() ?? component;
+export const isBuilderHydrating = ({
+  hydration,
+  parent,
+  nested,
+  hydrate,
+  ssrAbTest,
+  content,
+}: {
+  hydration: BuilderHydration | null;
+  parent: BuilderHydrating | null;
+  nested: boolean | undefined;
+  hydrate: boolean;
+  ssrAbTest: boolean | undefined;
+  content: { variations?: object } | undefined;
+}) =>
+  hydration &&
+  (parent ? parent() : !nested) &&
+  (nested || hydrate) &&
+  !ssrAbTest &&
+  !Object.keys(content?.variations || {}).length &&
+  !isEditing() &&
+  !isPreviewing()
+    ? hydration
+    : null;
+
+export const injectBuilderHydrating = (): BuilderHydrating =>
+  inject(BUILDER_HYDRATING, { optional: true }) ?? (() => null);
 
 export const skipHydrationWhileEditing = (host: Element) => {
   if (!isEditing() && !isPreviewing()) return;
@@ -158,10 +184,8 @@ export const builderChildrenIf = (
   items: unknown[] | undefined | null
 ) => (items?.length ? children : undefined);
 
-export const builderUseProjector = (
-  component: any,
-  children: TemplateRef<any> | undefined
-) => !!children && !!component && !acceptsChildren(component);
+const useProjector = (component: any, children: TemplateRef<any> | undefined) =>
+  !!children && !!component && !acceptsChildren(component);
 
 const createBuilderChildInputs = () => {
   let lastInputs: any;
@@ -182,35 +206,63 @@ const createBuilderChildInputs = () => {
   };
 };
 
-export const createBuilderOutlet = (hydrating: () => boolean) => {
+export const createHydratingOutlet = (
+  twins: Map<unknown, unknown>,
+  projector: Type<unknown>
+) => {
   const childInputs = createBuilderChildInputs();
   let last: { component: any; inputs: any; children: any } | undefined;
+  const twin = (component: any) => twins.get(component) ?? component;
   return {
+    twin,
+    legacy: (component: any, children: TemplateRef<any> | undefined) =>
+      useProjector(twin(component), children),
     component: (component: any, children: TemplateRef<any> | undefined) => {
-      if (!hydrating()) return component;
-      const twin = builderTwin(component);
-      return builderUseProjector(twin, children)
-        ? BuilderChildrenProjector
-        : twin;
+      const target = twin(component);
+      return useProjector(target, children) ? projector : target;
     },
     inputs: (
       component: any,
       inputs: any,
       children: TemplateRef<any> | undefined
     ) => {
-      if (!hydrating()) return inputs;
-      const twin = builderTwin(component);
-      if (!builderUseProjector(twin, children)) {
-        return childInputs(twin, inputs, children);
+      const target = twin(component);
+      if (!useProjector(target, children)) {
+        return childInputs(target, inputs, children);
       }
       if (
-        last?.component !== twin ||
+        last?.component !== target ||
         last.inputs !== inputs ||
         last.children !== children
       ) {
-        last = { component: twin, inputs, children };
+        last = { component: target, inputs, children };
       }
       return last;
+    },
+  };
+};
+
+export const createBuilderOutlet = (hydrating: BuilderHydrating) => {
+  let outlet: BuilderHydrationOutlet | undefined;
+  const hydratingOutlet = () => {
+    const hydration = hydrating();
+    return hydration ? (outlet ??= hydration.createOutlet()) : undefined;
+  };
+  return {
+    twin: (component: any) => hydratingOutlet()?.twin(component) ?? component,
+    legacy: (component: any, children: TemplateRef<any> | undefined) =>
+      !!hydratingOutlet()?.legacy(component, children),
+    component: (component: any, children: TemplateRef<any> | undefined) => {
+      const target = hydratingOutlet();
+      return target ? target.component(component, children) : component;
+    },
+    inputs: (
+      component: any,
+      inputs: any,
+      children: TemplateRef<any> | undefined
+    ) => {
+      const target = hydratingOutlet();
+      return target ? target.inputs(component, inputs, children) : inputs;
     },
   };
 };

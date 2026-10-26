@@ -28,7 +28,6 @@ import {
   ],
 })
 export default class DynamicDiv {
-  static readonly builderHydratingTwin = () => BuilderDynamicDiv;
   attributes = input<any>(undefined);
   actionAttributes = input<any>(undefined);
   BlockWrapperProps = input<any>(undefined);
@@ -202,6 +201,6 @@ export default class DynamicDiv {
     '.this-blocks-wrapper { display: flex; flex-direction: column; align-items: stretch; }',
   ],
 })
-export class BuilderDynamicDiv extends DynamicDiv {
+export class BuilderWrapperDiv extends DynamicDiv {
   builderChildren = input<any>(undefined);
 }

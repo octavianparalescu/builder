@@ -1,7 +1,9 @@
 import fs from 'fs';
+import path from 'path';
 
 const PATH_TO_DYNAMIC_RENDERER =
   './src/components/dynamic-renderer/dynamic-renderer.ts';
+const PATH_TO_HYDRATION = './src/components/hydration.ts';
 
 if (!fs.existsSync(PATH_TO_DYNAMIC_RENDERER)) {
   console.error(
@@ -81,7 +83,6 @@ const dynamicComponentTemplate = (tagName) => {
   styles: [':host { display: contents; }'],
 })
 export class Dynamic${capitalize(tagName)} {
-  static readonly builderHydratingTwin = () => BuilderDynamic${capitalize(tagName)};
   attributes = input.required<any>();
   actionAttributes = input<any | undefined>();
   tagName = input<string | undefined>();
@@ -307,6 +308,52 @@ export default class DynamicRenderer {
     }`;
 
   fs.writeFileSync(PATH_TO_DYNAMIC_RENDERER, dynamicRendererCode);
+
+  const twins = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const file = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) walk(file);
+      else if (file.endsWith('.ts')) {
+        for (const [, twin] of fs
+          .readFileSync(file, 'utf8')
+          .matchAll(/^export class (Builder\w+) extends \w+ \{/gm)) {
+          const from = path
+            .relative('./src/components', file)
+            .replace(/\.ts$/, '');
+          twins.push({ twin, from: from.startsWith('.') ? from : `./${from}` });
+        }
+      }
+    }
+  };
+  walk('./src');
+  if (!twins.some(({ twin }) => twin === 'BuilderImage')) {
+    console.error('No hydrating twins found');
+    process.exit(1);
+  }
+  fs.writeFileSync(
+    PATH_TO_HYDRATION,
+    `import { makeEnvironmentProviders } from '@angular/core';
+import BuilderChildrenProjector, { BUILDER_HYDRATION, createHydratingOutlet, markUnhydratableMarkup, skipHydrationWhileEditing } from './children-projector';
+${twins.map(({ twin, from }, i) => `import { ${twin} as Twin${i} } from '${from}';`).join('\n')}
+
+const twins = [${twins.map((_, i) => `Twin${i}`).join(', ')}];
+
+export const provideBuilderHydration = () => {
+  const twinsByComponent = new Map(twins.map((twin) => [Object.getPrototypeOf(twin), twin]));
+  return makeEnvironmentProviders([
+    {
+      provide: BUILDER_HYDRATION,
+      useValue: {
+        createOutlet: () => createHydratingOutlet(twinsByComponent, BuilderChildrenProjector),
+        markUnhydratableMarkup,
+        skipHydrationWhileEditing,
+      },
+    },
+  ]);
+};
+`
+  );
 
   console.log('Dynamic renderer generated successfully!');
 };
