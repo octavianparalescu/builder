@@ -175,11 +175,22 @@ export default class BuilderChildrenProjector {
   }
 }
 
+@Directive({
+  selector: '[builderLegacyAnchor]',
+  standalone: true,
+  exportAs: 'builderLegacyAnchor',
+})
+export class BuilderLegacyAnchor {
+  readonly viewContainer = inject(ViewContainerRef);
+}
+
 /**
  * In-place variant of `builder-children-projector` for a component template
- * root: renders the children next to itself for projection into the sibling
- * `ngComponentOutlet`, and on the server marks the enclosing component host
- * `ngSkipHydration`, so no wrapper element is added around the target.
+ * root: renders the children at `builderLegacyChildrenAt`, after the sibling
+ * `ngComponentOutlet`, for projection into it (a component without
+ * `<ng-content>` keeps them after itself, as 0.26.2 did), and on the server
+ * marks the enclosing component host `ngSkipHydration`, so no wrapper element
+ * is added around the target.
  */
 @Directive({
   selector: '[builderLegacyChildren]',
@@ -190,9 +201,11 @@ export class BuilderLegacyChildren {
   children = input<TemplateRef<any> | undefined>(undefined, {
     alias: 'builderLegacyChildren',
   });
+  at = input.required<BuilderLegacyAnchor>({
+    alias: 'builderLegacyChildrenAt',
+  });
   nodes: any[][] | undefined;
 
-  private readonly viewContainer = inject(ViewContainerRef);
   private readonly anchor = inject(ElementRef);
   private readonly isServer = isPlatformServer(inject(PLATFORM_ID));
   private rendered: TemplateRef<any> | undefined;
@@ -201,9 +214,10 @@ export class BuilderLegacyChildren {
     const children = this.children();
     if (children === this.rendered) return;
     this.rendered = children;
-    this.viewContainer.clear();
+    const viewContainer = this.at().viewContainer;
+    viewContainer.clear();
     this.nodes = children
-      ? [this.viewContainer.createEmbeddedView(children).rootNodes]
+      ? [viewContainer.createEmbeddedView(children).rootNodes]
       : undefined;
     if (this.isServer) {
       (this.anchor.nativeElement as Node).parentElement?.setAttribute(

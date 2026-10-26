@@ -534,7 +534,7 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
         outlets++;
         const children = site.children;
         const legacy = site.legacyInPlace
-          ? `<ng-container [builderLegacyChildren]="${children}" #builderLegacy="builderLegacyChildren"></ng-container><ng-template [ngComponentOutlet]="${component}" [ngComponentOutletInputs]="${inputs}" [ngComponentOutletContent]="builderLegacy.nodes"></ng-template>`
+          ? `<ng-container [builderLegacyChildren]="${children}" [builderLegacyChildrenAt]="builderLegacyAt" #builderLegacy="builderLegacyChildren"></ng-container><ng-template [ngComponentOutlet]="${component}" [ngComponentOutletInputs]="${inputs}" [ngComponentOutletContent]="builderLegacy.nodes"></ng-template><ng-container builderLegacyAnchor #builderLegacyAt="builderLegacyAnchor"></ng-container>`
           : `<builder-children-projector [component]="${component}" [inputs]="${inputs}" [children]="${children}"></builder-children-projector>`;
         return `@if (builderUseProjector(${component}, ${children})) {${legacy}} @else {<ng-container *ngComponentOutlet="${component}; inputs: builderChildInputs(${component}, ${inputs}, ${children})"></ng-container>}`;
       });
@@ -574,13 +574,13 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
       }
       code = code.replace(
         'imports: [CommonModule',
-        'imports: [CommonModule, BuilderChildrenProjector, BuilderLegacyChildren'
+        'imports: [CommonModule, BuilderChildrenProjector, BuilderLegacyAnchor, BuilderLegacyChildren'
       );
       code = code.replace(
         new RegExp(`export default class ${json.name}\\b[^{]*\\{`),
         '$&\n  protected readonly builderUseProjector = builderUseProjector;\n  protected readonly builderChildrenIf = builderChildrenIf;\n  protected readonly builderChildInputs = createBuilderChildInputs();\n'
       );
-      return `import BuilderChildrenProjector, { BuilderLegacyChildren, builderChildrenIf, builderUseProjector, createBuilderChildInputs } from "${site.path}";\n${code}`;
+      return `import BuilderChildrenProjector, { BuilderLegacyAnchor, BuilderLegacyChildren, builderChildrenIf, builderUseProjector, createBuilderChildInputs } from "${site.path}";\n${code}`;
     },
   },
 });
