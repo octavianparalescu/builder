@@ -199,7 +199,7 @@ const generateComponents = () => {
 export default class DynamicRenderer {
   isEmptyElement = isEmptyElement;
   protected readonly builderHydrating = injectBuilderHydrating();
-  protected readonly builderOutlet = createBuilderOutlet(this.builderHydrating);
+  protected readonly builderOutlet = createBuilderOutlet(this.builderHydrating, true);
 
   TagName = input.required<any>();
   attributes = input.required<any>();
@@ -327,14 +327,29 @@ export default class DynamicRenderer {
     }
   };
   walk('./src');
-  if (!twins.some(({ twin }) => twin === 'BuilderImage')) {
-    console.error('No hydrating twins found');
+  const expectedTwins = [
+    'BuilderFormComponent',
+    'BuilderFragmentComponent',
+    'BuilderImage',
+    'BuilderSectionComponent',
+    'BuilderInteractiveElement',
+    'BuilderWrapperDiv',
+    ...htmlElements.map((el) => `BuilderDynamic${capitalize(el)}`),
+  ];
+  const found = twins.map(({ twin }) => twin);
+  if (
+    found.length !== expectedTwins.length ||
+    expectedTwins.some((twin) => !found.includes(twin))
+  ) {
+    console.error(
+      `Unexpected hydrating twins: found ${found.join(', ')}; expected ${expectedTwins.join(', ')}`
+    );
     process.exit(1);
   }
   fs.writeFileSync(
     PATH_TO_HYDRATION,
     `import { makeEnvironmentProviders } from '@angular/core';
-import BuilderChildrenProjector, { BUILDER_HYDRATION, createHydratingOutlet, markUnhydratableMarkup, skipHydrationWhileEditing } from './children-projector';
+import BuilderChildrenProjector, { BUILDER_HYDRATION, createBuilderHydration } from './children-projector';
 ${twins.map(({ twin, from }, i) => `import { ${twin} as Twin${i} } from '${from}';`).join('\n')}
 
 const twins = [${twins.map((_, i) => `Twin${i}`).join(', ')}];
@@ -344,11 +359,7 @@ export const provideBuilderHydration = () => {
   return makeEnvironmentProviders([
     {
       provide: BUILDER_HYDRATION,
-      useValue: {
-        createOutlet: () => createHydratingOutlet(twinsByComponent, BuilderChildrenProjector),
-        markUnhydratableMarkup,
-        skipHydrationWhileEditing,
-      },
+      useValue: createBuilderHydration(twinsByComponent, BuilderChildrenProjector),
     },
   ]);
 };

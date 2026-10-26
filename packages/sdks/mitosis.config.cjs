@@ -454,14 +454,17 @@ const ANGULAR_CHILDREN_TEMPLATE_SITES = {
   LiveEdit: {
     path: './children-projector',
     children: 'wrapperTemplate',
+    projectsContent: true,
   },
   BlocksWrapper: {
     path: '../children-projector',
     children: 'blockswrapperTemplate',
+    projectsContent: true,
   },
   EnableEditor: {
     path: '../../children-projector',
     children: 'contentwrapperTemplate',
+    projectsContent: true,
   },
 };
 
@@ -471,7 +474,10 @@ const ANGULAR_CHILDREN_TEMPLATE_SITES = {
  * nodes projected through `ngComponentOutlet`'s `content`. Angular cannot
  * hydrate projected DOM nodes (NG0503); a component without a
  * `builderChildren` input still gets its children projected, inside
- * `builder-children-projector`, which skips hydration for that subtree only.
+ * `builder-children-projector`, which skips hydration for that subtree, or
+ * for the enclosing block or content when the children come from an
+ * `<ng-content>` of the outer view. Only a component with a single
+ * `<ng-content>` gets `builderChildren`; 0.26.2 fills only the first slot.
  * Content hydrates only with `<builder-content [hydrate]="true">`, and never
  * when it has A/B variations (the browser picks the variant from a cookie, so
  * the server HTML may hold another variant) or in the Visual Editor or a
@@ -508,7 +514,7 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
           )
           .replace(
             variantsConstructor,
-            'constructor(public scriptsContext: BuilderScriptsContext) {\n    builderInject(BUILDER_HYDRATION, { optional: true })?.skipHydrationWhileEditing(builderInject(BuilderElementRef).nativeElement);\n  }'
+            'constructor(public scriptsContext: BuilderScriptsContext) {\n    builderInject(BUILDER_HYDRATION, { optional: true })?.recordServerDecisions(builderInject(BuilderElementRef).nativeElement);\n  }'
           );
         return `import { booleanAttribute as builderBooleanAttribute, inject as builderInject, ElementRef as BuilderElementRef } from "@angular/core";\nimport { BUILDER_HYDRATION } from "../children-projector";\n${code}`;
       }
@@ -532,7 +538,7 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
           )
           .replace(
             contentClass,
-            '$&\n  hydrate = input(false, { transform: builderBooleanAttribute });\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  private readonly builderHydration = builderInject(BUILDER_HYDRATION, { optional: true });\n  private readonly builderParentHydrating = builderInject(BUILDER_HYDRATING, { optional: true, skipSelf: true });\n  readonly builderHydrating = createBuilderHydrating(() => isBuilderHydrating({ hydration: this.builderHydration, parent: this.builderParentHydrating, nested: this.isNestedRender(), hydrate: this.hydrate(), ssrAbTest: this.isSsrAbTest(), content: this.content() }));\n  ngDoCheck() {\n    if (this.builderIsServer) this.builderHostRef.nativeElement.setAttribute("ngSkipHydration", "true");\n  }\n  ngAfterViewChecked() {\n    const host = this.builderHostRef.nativeElement;\n    const hydration = this.builderHydrating();\n    if (!hydration) {\n      if (!host.hasAttribute("ngSkipHydration")) host.setAttribute("ngSkipHydration", "true");\n    } else if (this.builderIsServer) {\n      host.removeAttribute("ngSkipHydration");\n      if (!this.isNestedRender()) hydration.markUnhydratableMarkup(host);\n    }\n  }\n'
+            '$&\n  hydrate = input(false, { transform: builderBooleanAttribute });\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  private readonly builderHydration = builderInject(BUILDER_HYDRATION, { optional: true });\n  private readonly builderParentHydrating = builderInject(BUILDER_HYDRATING, { optional: true, skipSelf: true });\n  readonly builderHydrating = createBuilderHydrating(() => isBuilderHydrating({ hydration: this.builderHydration, host: this.builderHostRef.nativeElement, parent: this.builderParentHydrating, nested: this.isNestedRender(), hydrate: this.hydrate(), ssrAbTest: this.isSsrAbTest(), content: this.content() }));\n  ngDoCheck() {\n    if (this.builderIsServer) this.builderHostRef.nativeElement.setAttribute("ngSkipHydration", "true");\n  }\n  ngAfterViewChecked() {\n    const host = this.builderHostRef.nativeElement;\n    const hydration = this.builderHydrating();\n    if (!hydration) {\n      if (!host.hasAttribute("ngSkipHydration")) host.setAttribute("ngSkipHydration", "true");\n    } else if (this.builderIsServer && !hydration.forced(host)) {\n      host.removeAttribute("ngSkipHydration");\n      if (!this.isNestedRender()) hydration.markUnhydratableMarkup(host);\n    }\n  }\n'
           )
           .replace(
             contentConstructor,
@@ -542,12 +548,29 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
       }
       const upstream = code;
       code = ((code) => {
-        const ngContent = /<ng-content><\/ng-content\s*>/g;
-        if (!ANGULAR_STATIC_COMPONENTS.has(json.name) && ngContent.test(code)) {
-          code = code.replace(
-            ngContent,
-            '<ng-container *ngTemplateOutlet="builderChildren()"></ng-container>$&'
-          );
+        const ngContent = /<ng-content><\/ng-content\s*>/;
+        const slots = code.match(/<ng-content\b/g)?.length ?? 0;
+        if (
+          slots !== (code.match(/<ng-content><\/ng-content\s*>/g)?.length ?? 0)
+        ) {
+          throw new Error(`${json.name}: unsupported <ng-content>`);
+        }
+        const childrenOutlet =
+          '<ng-container *ngTemplateOutlet="builderChildren()"></ng-container>';
+        let takesChildren = false;
+        if (json.name === 'InteractiveElement') {
+          for (const close of ['</awaiter>', '</live-edit>']) {
+            if (code.split(close).length !== 2) {
+              throw new Error(`InteractiveElement: ${close} not found`);
+            }
+            code = code.replace(close, `${close}${childrenOutlet}`);
+          }
+          takesChildren = true;
+        } else if (!ANGULAR_STATIC_COMPONENTS.has(json.name) && slots === 1) {
+          code = code.replace(ngContent, `${childrenOutlet}$&`);
+          takesChildren = true;
+        }
+        if (takesChildren) {
           const classDeclaration = new RegExp(
             `export default class ${json.name}\\b[^{]*\\{`
           );
@@ -637,7 +660,7 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
         }
         code = code.replace(
           siteClass,
-          `$&\n  private readonly builderInjector = builderInject(BuilderInjector);\n  private get viewContainer() {\n    return this.builderInjector.get(ViewContainerRef);\n  }\n  protected readonly builderHydrating = injectBuilderHydrating();\n  protected readonly builderOutlet = createBuilderOutlet(this.builderHydrating);\n${site.children.includes('builderChildrenIf') ? '  protected readonly builderChildrenIf = builderChildrenIf;\n' : ''}`
+          `$&\n  private readonly builderInjector = builderInject(BuilderInjector);\n  private get viewContainer() {\n    return this.builderInjector.get(ViewContainerRef);\n  }\n  protected readonly builderHydrating = injectBuilderHydrating();\n  protected readonly builderOutlet = createBuilderOutlet(this.builderHydrating${site.projectsContent ? ', true' : ''});\n${site.children.includes('builderChildrenIf') ? '  protected readonly builderChildrenIf = builderChildrenIf;\n' : ''}`
         );
         const imports = site.legacyInPlace
           ? 'BuilderLegacyAnchor, BuilderLegacyChildren, createBuilderOutlet, injectBuilderHydrating'
@@ -659,7 +682,7 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
       };
       const original = decoratorOf(upstream);
       const hydrating = decoratorOf(code);
-      if (original === hydrating) return code;
+      if (original === hydrating && json.name !== 'Image') return code;
       const imageSelector = 'selector: "image",';
       if (json.name === 'Image' && !hydrating.includes(imageSelector)) {
         throw new Error('Image: selector not found');

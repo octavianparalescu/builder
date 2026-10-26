@@ -5,6 +5,7 @@ import {
   Directive,
   ElementRef,
   InjectionToken,
+  Injector,
   PLATFORM_ID,
   ViewChild,
   ViewContainerRef,
@@ -41,6 +42,8 @@ const TABLE_CHILD_TAGS: Record<string, string[]> = {
   tr: ['td', 'th', 'script', 'template'],
 };
 
+const SELECT_CHILD_TAGS = ['option', 'optgroup', 'hr', 'script', 'template'];
+
 const closestTag = (el: Element | null, tagName: string) => {
   while (el && el.tagName.toUpperCase() !== tagName.toUpperCase()) {
     el = el.parentElement;
@@ -69,6 +72,15 @@ export const markUnhydratableMarkup = (root: Element) => {
   )) {
     const outer = closestTag(inner.parentElement, inner.tagName);
     if (outer) invalid.push(outer);
+  }
+  for (const select of Array.from(root.querySelectorAll('select'))) {
+    if (
+      Array.from(select.children).some(
+        (child) => !SELECT_CHILD_TAGS.includes(child.tagName.toLowerCase())
+      )
+    ) {
+      invalid.push(select);
+    }
   }
   for (const part of Array.from(
     root.querySelectorAll(Object.keys(TABLE_CHILD_TAGS).join(','))
@@ -105,9 +117,14 @@ export const markUnhydratableMarkup = (root: Element) => {
 type BuilderHydrationOutlet = ReturnType<typeof createHydratingOutlet>;
 
 export interface BuilderHydration {
-  createOutlet: () => BuilderHydrationOutlet;
+  createOutlet: (
+    injector: Injector,
+    projectsContent: boolean
+  ) => BuilderHydrationOutlet;
   markUnhydratableMarkup: (root: Element) => void;
-  skipHydrationWhileEditing: (host: Element) => void;
+  recordServerDecisions: (host: Element) => void;
+  serverDecision: (host: Element) => boolean | undefined;
+  forced: (host: Element) => boolean;
 }
 
 export const BUILDER_HYDRATION = new InjectionToken<BuilderHydration>(
@@ -131,6 +148,7 @@ export const createBuilderHydrating = (
 
 export const isBuilderHydrating = ({
   hydration,
+  host,
   parent,
   nested,
   hydrate,
@@ -138,34 +156,29 @@ export const isBuilderHydrating = ({
   content,
 }: {
   hydration: BuilderHydration | null;
+  host: Element;
   parent: BuilderHydrating | null;
   nested: boolean | undefined;
   hydrate: boolean;
   ssrAbTest: boolean | undefined;
   content: { variations?: object } | undefined;
-}) =>
-  hydration &&
-  (parent ? parent() : !nested) &&
-  (nested || hydrate) &&
-  !ssrAbTest &&
-  !Object.keys(content?.variations || {}).length &&
-  !isEditing() &&
-  !isPreviewing()
+}) => {
+  if (!hydration) return null;
+  const server = hydration.serverDecision(host);
+  if (server !== undefined) return server ? hydration : null;
+  return (parent ? parent() : !nested) &&
+    (nested || hydrate) &&
+    content &&
+    !ssrAbTest &&
+    !Object.keys(content.variations || {}).length &&
+    !isEditing() &&
+    !isPreviewing()
     ? hydration
     : null;
+};
 
 export const injectBuilderHydrating = (): BuilderHydrating =>
   inject(BUILDER_HYDRATING, { optional: true }) ?? (() => null);
-
-export const skipHydrationWhileEditing = (host: Element) => {
-  if (!isEditing() && !isPreviewing()) return;
-  for (const child of Array.from(host.children)) {
-    if (child.tagName === 'CONTENT-COMPONENT') {
-      child.setAttribute('ngSkipHydration', 'true');
-      child.removeAttribute('ngh');
-    }
-  }
-};
 
 const acceptsChildrenCache = new WeakMap<object, boolean>();
 
@@ -208,20 +221,44 @@ const createBuilderChildInputs = () => {
   };
 };
 
-export const createHydratingOutlet = (
+const skipBoundary = (host: Element, forced: WeakSet<Element>) => {
+  let boundary = host.parentElement;
+  while (
+    boundary &&
+    boundary.tagName !== 'BLOCK' &&
+    boundary.tagName !== 'CONTENT-COMPONENT'
+  ) {
+    boundary = boundary.parentElement;
+  }
+  if (boundary && !forced.has(boundary)) {
+    forced.add(boundary);
+    boundary.setAttribute('ngSkipHydration', 'true');
+  }
+};
+
+const createHydratingOutlet = (
   twins: Map<unknown, unknown>,
-  projector: Type<unknown>
+  projector: Type<unknown>,
+  forced: WeakSet<Element>,
+  injector: Injector,
+  projectsContent: boolean
 ) => {
   const childInputs = createBuilderChildInputs();
   let last: { component: any; inputs: any; children: any } | undefined;
   const twin = (component: any) => twins.get(component) ?? component;
+  const skipsContent =
+    projectsContent && isPlatformServer(injector.get(PLATFORM_ID));
   return {
     twin,
     legacy: (component: any, children: TemplateRef<any> | undefined) =>
       useProjector(twin(component), children),
     component: (component: any, children: TemplateRef<any> | undefined) => {
       const target = twin(component);
-      return useProjector(target, children) ? projector : target;
+      if (!useProjector(target, children)) return target;
+      if (skipsContent) {
+        skipBoundary(injector.get(ElementRef).nativeElement, forced);
+      }
+      return projector;
     },
     inputs: (
       component: any,
@@ -244,11 +281,49 @@ export const createHydratingOutlet = (
   };
 };
 
-export const createBuilderOutlet = (hydrating: BuilderHydrating) => {
+export const createBuilderHydration = (
+  twins: Map<unknown, unknown>,
+  projector: Type<unknown>
+): BuilderHydration => {
+  const serverDecisions = new WeakMap<Element, boolean>();
+  const forced = new WeakSet<Element>();
+  return {
+    createOutlet: (injector, projectsContent) =>
+      createHydratingOutlet(
+        twins,
+        projector,
+        forced,
+        injector,
+        projectsContent
+      ),
+    markUnhydratableMarkup,
+    recordServerDecisions: (host) => {
+      const editing = isEditing() || isPreviewing();
+      for (const child of Array.from(host.children)) {
+        if (child.tagName !== 'CONTENT-COMPONENT') continue;
+        if (editing) {
+          child.setAttribute('ngSkipHydration', 'true');
+          child.removeAttribute('ngh');
+        }
+        serverDecisions.set(child, !child.hasAttribute('ngSkipHydration'));
+      }
+    },
+    serverDecision: (host) => serverDecisions.get(host),
+    forced: (host) => forced.has(host),
+  };
+};
+
+export const createBuilderOutlet = (
+  hydrating: BuilderHydrating,
+  projectsContent = false
+) => {
+  const injector = inject(Injector);
   let outlet: BuilderHydrationOutlet | undefined;
   const hydratingOutlet = () => {
     const hydration = hydrating();
-    return hydration ? (outlet ??= hydration.createOutlet()) : undefined;
+    return hydration
+      ? (outlet ??= hydration.createOutlet(injector, projectsContent))
+      : undefined;
   };
   return {
     twin: (component: any) => hydratingOutlet()?.twin(component) ?? component,
