@@ -542,6 +542,15 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
         throw new Error(`${json.name}: viewContainer still used`);
       }
 
+      const myContentField = /\n\s*myContent = signal<any\[\]>\(\[\]\);/;
+      if (!myContentField.test(code)) {
+        throw new Error(`${json.name}: myContent field not found`);
+      }
+      code = code.replace(myContentField, '');
+      if (code.includes('myContent')) {
+        throw new Error(`${json.name}: myContent still used`);
+      }
+
       if (!code.includes('imports: [CommonModule')) {
         throw new Error(`${json.name}: component imports not found`);
       }

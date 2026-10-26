@@ -57,11 +57,11 @@ const htmlElements = [
 ];
 
 const voidElements = ['img', 'input'];
-const rawTextElements = ['iframe'];
+const rawTextElements = ['iframe', 'textarea'];
 
 const dynamicRendererImports = [
   `import { CommonModule, NgTemplateOutlet } from '@angular/common';`,
-  `import { Component, ElementRef, input, viewChild, Renderer2, SimpleChanges, TemplateRef, ViewContainerRef, signal, computed } from '@angular/core';`,
+  `import { Component, ElementRef, input, viewChild, Renderer2, SimpleChanges, signal, computed } from '@angular/core';`,
   `import { isEmptyElement } from './dynamic-renderer.helpers';`,
   `import BuilderChildrenProjector, { builderUseProjector, createBuilderChildInputs } from '../children-projector';`,
 ];
