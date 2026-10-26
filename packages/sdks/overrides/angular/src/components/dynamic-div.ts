@@ -17,8 +17,7 @@ import {
       (click)="onClick() && onClick()($event)"
       (mouseenter)="onMouseEnter() && onMouseEnter()($event)"
     >
-      <ng-container *ngTemplateOutlet="builderChildren()"></ng-container
-      ><ng-content></ng-content>
+      <ng-content></ng-content>
     </div>
   `,
   standalone: true,
@@ -29,7 +28,7 @@ import {
   ],
 })
 export default class DynamicDiv {
-  builderChildren = input<any>(undefined);
+  static readonly builderHydratingTwin = () => BuilderDynamicDiv;
   attributes = input<any>(undefined);
   actionAttributes = input<any>(undefined);
   BlockWrapperProps = input<any>(undefined);
@@ -183,4 +182,26 @@ export default class DynamicDiv {
   ngOnDestroy() {
     this._listenerFns.forEach((fn) => fn());
   }
+}
+
+@Component({
+  selector: 'dynamic-div, DynamicDiv',
+  template: `
+    <div
+      #v
+      (click)="onClick() && onClick()($event)"
+      (mouseenter)="onMouseEnter() && onMouseEnter()($event)"
+    >
+      <ng-container *ngTemplateOutlet="builderChildren()"></ng-container>
+    </div>
+  `,
+  standalone: true,
+  imports: [CommonModule],
+  styles: [
+    ':host { display: contents; }',
+    '.this-blocks-wrapper { display: flex; flex-direction: column; align-items: stretch; }',
+  ],
+})
+export class BuilderDynamicDiv extends DynamicDiv {
+  builderChildren = input<any>(undefined);
 }
