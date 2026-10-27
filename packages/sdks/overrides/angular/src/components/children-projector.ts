@@ -84,13 +84,6 @@ const CELL_CLOSING_TAGS = [
 const tagRule = (rules: Record<string, string[]>, tag: string) =>
   Object.prototype.hasOwnProperty.call(rules, tag) ? rules[tag] : undefined;
 
-const closestTag = (el: Element | null, tagName: string) => {
-  while (el && el.tagName.toUpperCase() !== tagName.toUpperCase()) {
-    el = el.parentElement;
-  }
-  return el;
-};
-
 /**
  * Marks `ngSkipHydration` on the block around markup the browser's HTML parser
  * would restructure, so server HTML that cannot hydrate is rendered again.
@@ -109,9 +102,6 @@ export const markUnhydratableMarkup = (root: Element) => {
       invalid.add(ancestors[i]);
     }
   };
-  const isDropped = (el: Element) =>
-    !!tagRule(TABLE_PART_PARENTS, el.localName) &&
-    !closestTag(el.parentElement, 'TABLE');
   const nearest: Record<string, Element | null> = {
     a: null,
     button: null,
@@ -122,14 +112,25 @@ export const markUnhydratableMarkup = (root: Element) => {
   };
   const rootPath = new Set<Element>();
   for (let el: Element | null = root; el; el = el.parentElement) {
-    const tag = el.localName;
     rootPath.add(el);
+  }
+  const droppedParts = new Set<Element>();
+  let tableAbove = false;
+  for (const el of [...rootPath].reverse()) {
+    if (!tableAbove && tagRule(TABLE_PART_PARENTS, el.localName)) {
+      droppedParts.add(el);
+    }
+    if (el.localName === 'table') tableAbove = true;
+  }
+  for (const el of rootPath) {
+    const tag = el.localName;
     if (NEAREST_TAGS.includes(tag) && !nearest[tag]) nearest[tag] = el;
-    if (isDropped(el)) continue;
+    if (droppedParts.has(el)) continue;
     if (CELL_TAGS.includes(tag) && !nearest.cell) nearest.cell = el;
     if (special.has(tag) && !nearest.special) nearest.special = el;
   }
   const ps: Element[] = [];
+  const hs: Element[] = [];
   const selects: Element[] = [];
   const selectsInTable: boolean[] = [];
   let stop: Element | null = null;
@@ -139,7 +140,7 @@ export const markUnhydratableMarkup = (root: Element) => {
       const tag = el.localName;
       const select = selects[selects.length - 1];
       if (pClosing.has(tag)) markAll(ps);
-      if (headings.has(tag) && headings.has(parentTag)) invalid.add(parent);
+      if (headings.has(tag)) markAll(hs);
       if (select && FORM_CONTROL_TAGS.includes(tag)) {
         if (nearest.special === select) markAll(selects);
         else contained.add(root);
@@ -183,6 +184,7 @@ export const markUnhydratableMarkup = (root: Element) => {
       const saved = { ...nearest };
       const savedStop = stop;
       const dropped = !!partParents && !saved.table;
+      if (dropped) droppedParts.add(el);
       if (NEAREST_TAGS.includes(tag)) nearest[tag] = el;
       if (!dropped) {
         if (CELL_TAGS.includes(tag)) nearest.cell = el;
@@ -192,12 +194,14 @@ export const markUnhydratableMarkup = (root: Element) => {
         }
       }
       if (tag === 'p') ps.push(el);
+      if (headings.has(tag)) hs.push(el);
       if (tag === 'select') {
         selects.push(el);
         selectsInTable.push(!!saved.cell);
       }
       walk(el);
       if (tag === 'p') ps.pop();
+      if (headings.has(tag)) hs.pop();
       if (tag === 'select') {
         selects.pop();
         selectsInTable.pop();
@@ -215,7 +219,7 @@ export const markUnhydratableMarkup = (root: Element) => {
       boundary &&
       boundary !== root &&
       !boundaries.has(boundary) &&
-      (!special.has(boundary.localName) || isDropped(boundary))
+      (!special.has(boundary.localName) || droppedParts.has(boundary))
     ) {
       path.push(boundary);
       boundary = boundary.parentElement;
@@ -227,12 +231,21 @@ export const markUnhydratableMarkup = (root: Element) => {
     for (const step of path) boundaries.set(step, found);
     contained.add(found);
   }
+  const blocks = new Map<Element, Element>();
   for (const el of contained) {
+    const path: Element[] = [];
     let block = el;
-    while (!rootPath.has(block) && block.localName !== 'block') {
+    while (
+      !rootPath.has(block) &&
+      block.localName !== 'block' &&
+      !blocks.has(block)
+    ) {
+      path.push(block);
       block = block.parentElement!;
     }
-    (rootPath.has(block) ? root : block).setAttribute('ngSkipHydration', '');
+    const found = blocks.get(block) ?? (rootPath.has(block) ? root : block);
+    for (const step of path) blocks.set(step, found);
+    found.setAttribute('ngSkipHydration', '');
   }
 };
 
