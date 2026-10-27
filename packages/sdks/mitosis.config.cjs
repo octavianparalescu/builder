@@ -606,7 +606,7 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
           const single = `<ng-container *ngComponentOutlet="builderOutlet.component(${component}, ${children}); inputs: builderOutlet.inputs(${component}, ${inputs}, ${children}); content: myContent();"></ng-container>`;
           if (!site.legacyInPlace) return single;
           const twin = `builderOutlet.twin(${component})`;
-          legacy = `@else if (builderOutlet.legacy(${component}, ${children})) {<ng-container [builderLegacyChildren]="${children}" [builderLegacyChildrenAt]="builderLegacyAt" #builderLegacy="builderLegacyChildren"></ng-container><ng-template [ngComponentOutlet]="${twin}" [ngComponentOutletInputs]="${inputs}" [ngComponentOutletContent]="builderLegacy.nodes"></ng-template><ng-container builderLegacyAnchor #builderLegacyAt="builderLegacyAnchor"></ng-container>} @else {${single}`;
+          legacy = `@else if (builderOutlet.legacy(${component}, ${children})) {<ng-container [builderLegacyChildren]="${children}" [builderLegacyChildrenAt]="builderLegacyAt" #builderLegacy="builderLegacyChildren" (builderLegacyRendered)="builderLegacyRendered($event)"></ng-container><ng-template [ngComponentOutlet]="${twin}" [ngComponentOutletInputs]="${inputs}" [ngComponentOutletContent]="builderLegacy.nodes"></ng-template><ng-container builderLegacyAnchor #builderLegacyAt="builderLegacyAnchor"></ng-container>} @else {${single}`;
           return 'BUILDER_LEGACY_OUTLET';
         });
         if (outlets !== 1) {
@@ -693,7 +693,26 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
           : hydrating;
       const childrenInput = '\n  builderChildren = input<any>(undefined);\n';
       const ownsChildrenInput = code.includes(childrenInput);
-      return `${code.replace(hydrating, () => original).replace(childrenInput, '\n')}\n${twin}export class Builder${json.name} extends ${json.name} {${ownsChildrenInput ? childrenInput : ''}}\n`;
+      const slotGuard =
+        json.name === 'InteractiveElement'
+          ? `  override ngAfterViewInit() {
+    if (!this.builderOutlet.guard(this.Wrapper(), this.builderChildren(), this.block())) {
+      super.ngAfterViewInit();
+    }
+  }
+  ngAfterViewChecked() {
+    this.builderOutlet.guard(this.Wrapper(), this.builderChildren(), this.block());
+  }
+  builderLegacyRendered(host: Element | null) {
+    if (!this.builderOutlet.fellBack()) return;
+    if (host && !this.hasAttributesInput(this.Wrapper())) {
+      this.updateAttributes(host as HTMLElement, this.attributes());
+    }
+    this.builderOutlet.rescan();
+  }
+`
+          : '';
+      return `${code.replace(hydrating, () => original).replace(childrenInput, '\n')}\n${twin}export class Builder${json.name} extends ${json.name} {${ownsChildrenInput ? childrenInput : ''}${slotGuard}}\n`;
     },
   },
 });

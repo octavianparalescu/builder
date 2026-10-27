@@ -11,8 +11,10 @@ import {
   ViewContainerRef,
   inject,
   input,
+  output,
   reflectComponentType,
   signal,
+  untracked,
 } from '@angular/core';
 import { isEditing } from '../functions/is-editing';
 import { isPreviewing } from '../functions/is-previewing';
@@ -80,6 +82,12 @@ const CELL_CLOSING_TAGS = [
   'td',
   'th',
 ];
+
+const SLOT_CLOSING_TAGS = new Set(
+  'a,button,caption,colgroup,dd,dt,form,h1,h2,h3,h4,h5,h6,iframe,li,math,nobr,noembed,noframes,noscript,optgroup,option,p,plaintext,rb,rp,rt,rtc,script,select,style,svg,table,tbody,td,template,textarea,tfoot,th,thead,title,tr,xmp'.split(
+    ','
+  )
+);
 
 const tagRule = (rules: Record<string, string[]>, tag: string) =>
   Object.prototype.hasOwnProperty.call(rules, tag) ? rules[tag] : undefined;
@@ -356,6 +364,27 @@ const createBuilderChildInputs = () => {
   };
 };
 
+const findSlotChild = (
+  host: Element,
+  block: { children?: { id?: string }[] } | undefined
+) => {
+  const ids = (block?.children ?? [])
+    .map((child) => child?.id)
+    .filter((id): id is string => !!id && /^[\w-]+$/.test(id));
+  if (!ids.length) return null;
+  let el = host.querySelector(ids.map((id) => `[builder-id="${id}"]`).join());
+  while (el && el !== host && el.localName !== 'block') el = el.parentElement;
+  return el === host ? null : el;
+};
+
+const clearScanMarks = (root: Element) => {
+  for (const el of [root, ...Array.from(root.querySelectorAll('block'))]) {
+    if (el.getAttribute('ngSkipHydration') === '') {
+      el.removeAttribute('ngSkipHydration');
+    }
+  }
+};
+
 const skipBoundary = (host: Element, forced: WeakSet<Element>) => {
   let boundary = host.parentElement;
   while (
@@ -375,18 +404,54 @@ const createHydratingOutlet = (
   twins: Map<unknown, unknown>,
   projector: Type<unknown>,
   forced: WeakSet<Element>,
+  stale: WeakSet<Element>,
   injector: Injector,
   projectsContent: boolean
 ) => {
   const childInputs = createBuilderChildInputs();
   let last: { component: any; inputs: any; children: any } | undefined;
   const twin = (component: any) => twins.get(component) ?? component;
-  const skipsContent =
-    projectsContent && isPlatformServer(injector.get(PLATFORM_ID));
+  const isServer = isPlatformServer(injector.get(PLATFORM_ID));
+  const skipsContent = projectsContent && isServer;
+  const host = injector.get(ElementRef).nativeElement as Element;
+  const fallback = signal(false);
+  let slotChecked = false;
   return {
     twin,
     legacy: (component: any, children: TemplateRef<any> | undefined) =>
-      useProjector(twin(component), children),
+      fallback() || useProjector(twin(component), children),
+    guard: (
+      component: any,
+      children: TemplateRef<any> | undefined,
+      block: { children?: { id?: string }[] } | undefined
+    ) =>
+      untracked(() => {
+        if (slotChecked || !children || !acceptsChildren(twin(component))) {
+          return fallback();
+        }
+        const child = findSlotChild(host, block);
+        if (!child) return false;
+        slotChecked = true;
+        let el = child.parentElement;
+        while (el && el !== host && !SLOT_CLOSING_TAGS.has(el.localName)) {
+          el = el.parentElement;
+        }
+        if (el && el !== host) fallback.set(true);
+        return fallback();
+      }),
+    fellBack: () => untracked(fallback),
+    rescan: () => {
+      if (!isServer) return;
+      let root: Element | null = null;
+      for (let el = host.parentElement; el; el = el.parentElement) {
+        if (el.localName === 'content-component') root = el;
+      }
+      if (!root || forced.has(root)) return;
+      stale.add(root);
+      if (root.getAttribute('ngSkipHydration') === 'true') return;
+      clearScanMarks(root);
+      markUnhydratableMarkup(root);
+    },
     component: (component: any, children: TemplateRef<any> | undefined) => {
       const target = twin(component);
       if (!useProjector(target, children)) return target;
@@ -422,16 +487,21 @@ export const createBuilderHydration = (
 ): BuilderHydration => {
   const serverDecisions = new WeakMap<Element, boolean>();
   const forced = new WeakSet<Element>();
+  const stale = new WeakSet<Element>();
   return {
     createOutlet: (injector, projectsContent) =>
       createHydratingOutlet(
         twins,
         projector,
         forced,
+        stale,
         injector,
         projectsContent
       ),
-    markUnhydratableMarkup,
+    markUnhydratableMarkup: (root) => {
+      if (stale.delete(root)) clearScanMarks(root);
+      markUnhydratableMarkup(root);
+    },
     recordServerDecisions: (host) => {
       const editing = isEditing() || isPreviewing();
       for (const child of Array.from(host.children)) {
@@ -464,6 +534,13 @@ export const createBuilderOutlet = (
     twin: (component: any) => hydratingOutlet()?.twin(component) ?? component,
     legacy: (component: any, children: TemplateRef<any> | undefined) =>
       !!hydratingOutlet()?.legacy(component, children),
+    guard: (
+      component: any,
+      children: TemplateRef<any> | undefined,
+      block: { children?: { id?: string }[] } | undefined
+    ) => !!hydratingOutlet()?.guard(component, children, block),
+    fellBack: () => !!hydratingOutlet()?.fellBack(),
+    rescan: () => hydratingOutlet()?.rescan(),
     component: (component: any, children: TemplateRef<any> | undefined) => {
       const target = hydratingOutlet();
       return target ? target.component(component, children) : component;
@@ -540,6 +617,7 @@ export class BuilderLegacyChildren {
     alias: 'builderLegacyChildrenAt',
   });
   nodes: any[][] | undefined;
+  readonly done = output<Element | null>({ alias: 'builderLegacyRendered' });
 
   private readonly anchor = inject(ElementRef);
   private readonly isServer = isPlatformServer(inject(PLATFORM_ID));
@@ -560,5 +638,9 @@ export class BuilderLegacyChildren {
         ''
       );
     }
+  }
+
+  ngAfterViewInit() {
+    this.done.emit((this.anchor.nativeElement as Comment).nextElementSibling);
   }
 }
