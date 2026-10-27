@@ -70,6 +70,17 @@ const FORM_CONTROL_TAGS = ['input', 'select', 'textarea', 'keygen'];
 
 const NEAREST_TAGS = ['a', 'button', 'form', 'table'];
 
+const CELL_CLOSING_TAGS = [
+  'caption',
+  'table',
+  'tbody',
+  'tfoot',
+  'thead',
+  'tr',
+  'td',
+  'th',
+];
+
 const tagRule = (rules: Record<string, string[]>, tag: string) =>
   Object.prototype.hasOwnProperty.call(rules, tag) ? rules[tag] : undefined;
 
@@ -88,99 +99,140 @@ export const markUnhydratableMarkup = (root: Element) => {
   const special = new Set(PARSER_SPECIAL_TAGS.split(','));
   const pClosing = new Set(P_CLOSING_TAGS.split(','));
   const headings = new Set(HEADING_TAGS.split(','));
-  const invalid: Element[] = [];
-  const contained: Element[] = [];
+  const invalid = new Set<Element>();
+  const contained = new Set<Element>();
   const marked = new Set<Element>();
   const markAll = (ancestors: Element[]) => {
     for (let i = ancestors.length - 1; i >= 0; i--) {
       if (marked.has(ancestors[i])) return;
       marked.add(ancestors[i]);
-      invalid.push(ancestors[i]);
+      invalid.add(ancestors[i]);
     }
   };
+  const isDropped = (el: Element) =>
+    !!tagRule(TABLE_PART_PARENTS, el.localName) &&
+    !closestTag(el.parentElement, 'TABLE');
   const nearest: Record<string, Element | null> = {
     a: null,
     button: null,
     form: null,
     table: null,
     cell: null,
+    special: null,
   };
+  const rootPath = new Set<Element>();
   for (let el: Element | null = root; el; el = el.parentElement) {
     const tag = el.localName;
+    rootPath.add(el);
     if (NEAREST_TAGS.includes(tag) && !nearest[tag]) nearest[tag] = el;
+    if (isDropped(el)) continue;
     if (CELL_TAGS.includes(tag) && !nearest.cell) nearest.cell = el;
+    if (special.has(tag) && !nearest.special) nearest.special = el;
   }
   const ps: Element[] = [];
-  const hs: Element[] = [];
   const selects: Element[] = [];
+  const selectsInTable: boolean[] = [];
   let stop: Element | null = null;
   const walk = (parent: Element) => {
     const parentTag = parent.localName;
     for (let el = parent.firstElementChild; el; el = el.nextElementSibling) {
       const tag = el.localName;
+      const select = selects[selects.length - 1];
       if (pClosing.has(tag)) markAll(ps);
-      if (headings.has(tag)) markAll(hs);
-      if (FORM_CONTROL_TAGS.includes(tag)) markAll(selects);
-      if ((tag === 'a' || tag === 'button' || tag === 'form') && nearest[tag]) {
-        invalid.push(nearest[tag]!);
+      if (headings.has(tag) && headings.has(parentTag)) invalid.add(parent);
+      if (select && FORM_CONTROL_TAGS.includes(tag)) {
+        if (nearest.special === select) markAll(selects);
+        else contained.add(root);
+      }
+      if (
+        select &&
+        selectsInTable[selects.length - 1] &&
+        CELL_CLOSING_TAGS.includes(tag)
+      ) {
+        contained.add(root);
+      }
+      if ((tag === 'a' || tag === 'form') && nearest[tag]) {
+        invalid.add(nearest[tag]!);
+      }
+      if (tag === 'button' && nearest.button) {
+        if (nearest.special === nearest.button) invalid.add(nearest.button);
+        else contained.add(root);
       }
       if (tag === 'table' && nearest.cell?.localName === 'table') {
-        invalid.push(nearest.cell);
+        if (nearest.special === nearest.cell) invalid.add(nearest.cell);
+        else contained.add(root);
       }
       const partParents = tagRule(TABLE_PART_PARENTS, tag);
       if (partParents && !partParents.includes(parentTag)) {
-        contained.push(nearest.table ?? el);
+        contained.add(nearest.table ?? el);
       }
       const closes = tagRule(IMPLIED_END_ITEMS, tag);
       if (closes && stop && closes.includes(stop.localName)) {
-        contained.push(root);
+        contained.add(root);
       }
       if (parent !== root) {
         if (parentTag === 'select' && !SELECT_CHILD_TAGS.includes(tag)) {
-          contained.push(parent);
+          contained.add(parent);
         }
         const allowed = tagRule(TABLE_CHILD_TAGS, parentTag);
         if (allowed && !allowed.includes(tag) && nearest.table) {
-          contained.push(nearest.table);
+          contained.add(nearest.table);
         }
       }
       if (!el.firstElementChild) continue;
       const saved = { ...nearest };
       const savedStop = stop;
+      const dropped = !!partParents && !saved.table;
       if (NEAREST_TAGS.includes(tag)) nearest[tag] = el;
-      if (CELL_TAGS.includes(tag)) nearest.cell = el;
-      if (special.has(tag) && !LIST_ITEM_SCOPE_EXCEPTIONS.includes(tag)) {
-        stop = el;
+      if (!dropped) {
+        if (CELL_TAGS.includes(tag)) nearest.cell = el;
+        if (special.has(tag)) {
+          nearest.special = el;
+          if (!LIST_ITEM_SCOPE_EXCEPTIONS.includes(tag)) stop = el;
+        }
       }
       if (tag === 'p') ps.push(el);
-      if (headings.has(tag)) hs.push(el);
-      if (tag === 'select') selects.push(el);
+      if (tag === 'select') {
+        selects.push(el);
+        selectsInTable.push(!!saved.cell);
+      }
       walk(el);
       if (tag === 'p') ps.pop();
-      if (headings.has(tag)) hs.pop();
-      if (tag === 'select') selects.pop();
+      if (tag === 'select') {
+        selects.pop();
+        selectsInTable.pop();
+      }
       Object.assign(nearest, saved);
       stop = savedStop;
     }
   };
   walk(root);
+  const boundaries = new Map<Element, Element>();
   for (const el of invalid) {
+    const path: Element[] = [];
     let boundary = el.parentElement;
     while (
       boundary &&
       boundary !== root &&
-      !special.has(boundary.tagName.toLowerCase())
+      !boundaries.has(boundary) &&
+      (!special.has(boundary.localName) || isDropped(boundary))
     ) {
+      path.push(boundary);
       boundary = boundary.parentElement;
     }
-    contained.push(boundary && boundary !== root ? boundary : root);
+    const found =
+      boundary && boundary !== root
+        ? boundaries.get(boundary) ?? boundary
+        : root;
+    for (const step of path) boundaries.set(step, found);
+    contained.add(found);
   }
   for (const el of contained) {
-    const block = closestTag(el, 'BLOCK');
-    (block && root.contains(block) ? block : root).setAttribute(
-      'ngSkipHydration',
-      ''
-    );
+    let block = el;
+    while (!rootPath.has(block) && block.localName !== 'block') {
+      block = block.parentElement!;
+    }
+    (rootPath.has(block) ? root : block).setAttribute('ngSkipHydration', '');
   }
 };
 
