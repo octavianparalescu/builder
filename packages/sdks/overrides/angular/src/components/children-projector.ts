@@ -64,6 +64,15 @@ const IMPLIED_END_ITEMS: Record<string, string[]> = {
 
 const LIST_ITEM_SCOPE_EXCEPTIONS = ['address', 'div', 'p'];
 
+const CELL_TAGS = ['td', 'th', 'caption', 'table'];
+
+const FORM_CONTROL_TAGS = ['input', 'select', 'textarea', 'keygen'];
+
+const NEAREST_TAGS = ['a', 'button', 'form', 'table'];
+
+const tagRule = (rules: Record<string, string[]>, tag: string) =>
+  Object.prototype.hasOwnProperty.call(rules, tag) ? rules[tag] : undefined;
+
 const closestTag = (el: Element | null, tagName: string) => {
   while (el && el.tagName.toUpperCase() !== tagName.toUpperCase()) {
     el = el.parentElement;
@@ -72,94 +81,95 @@ const closestTag = (el: Element | null, tagName: string) => {
 };
 
 /**
- * The browser's HTML parser re-parents nodes it cannot nest (a `<p>` holding a
- * `<div>`, nested headings/links/buttons/forms/list items, non-table elements
- * inside table parts, table parts outside their table), so server HTML with
- * such nesting cannot hydrate. A table, select or stray table part only
- * changes nodes inside its own block. An element closed early (`<p>`, list
- * items, headings, links, buttons, forms) lets the end tags that follow close
- * the wrapper elements around it up to the nearest special element, so the
- * block around that element is skipped. Nothing is projected into a block from
- * outside, so its subtree can be skipped.
+ * Marks `ngSkipHydration` on the block around markup the browser's HTML parser
+ * would restructure, so server HTML that cannot hydrate is rendered again.
  */
 export const markUnhydratableMarkup = (root: Element) => {
-  const parserSpecialTags = new Set(PARSER_SPECIAL_TAGS.split(','));
+  const special = new Set(PARSER_SPECIAL_TAGS.split(','));
+  const pClosing = new Set(P_CLOSING_TAGS.split(','));
+  const headings = new Set(HEADING_TAGS.split(','));
   const invalid: Element[] = [];
   const contained: Element[] = [];
-  for (const p of Array.from(root.querySelectorAll('p'))) {
-    if (p.querySelector(P_CLOSING_TAGS)) invalid.push(p);
-  }
-  for (const heading of Array.from(root.querySelectorAll(HEADING_TAGS))) {
-    if (heading.querySelector(HEADING_TAGS)) invalid.push(heading);
-  }
-  for (const inner of Array.from(
-    root.querySelectorAll('a a, button button, form form')
-  )) {
-    const outer = closestTag(inner.parentElement, inner.tagName);
-    if (outer) invalid.push(outer);
-  }
-  for (const part of Array.from(
-    root.querySelectorAll(Object.keys(TABLE_PART_PARENTS).join(','))
-  )) {
-    const parent = part.parentElement?.tagName.toLowerCase();
-    if (
-      !parent ||
-      !TABLE_PART_PARENTS[part.tagName.toLowerCase()].includes(parent)
-    ) {
-      contained.push(closestTag(part, 'TABLE') ?? part);
+  const marked = new Set<Element>();
+  const markAll = (ancestors: Element[]) => {
+    for (let i = ancestors.length - 1; i >= 0; i--) {
+      if (marked.has(ancestors[i])) return;
+      marked.add(ancestors[i]);
+      invalid.push(ancestors[i]);
     }
+  };
+  const nearest: Record<string, Element | null> = {
+    a: null,
+    button: null,
+    form: null,
+    table: null,
+    cell: null,
+  };
+  for (let el: Element | null = root; el; el = el.parentElement) {
+    const tag = el.localName;
+    if (NEAREST_TAGS.includes(tag) && !nearest[tag]) nearest[tag] = el;
+    if (CELL_TAGS.includes(tag) && !nearest.cell) nearest.cell = el;
   }
-  for (const item of Array.from(
-    root.querySelectorAll(Object.keys(IMPLIED_END_ITEMS).join(','))
-  )) {
-    const closes = IMPLIED_END_ITEMS[item.tagName.toLowerCase()];
-    for (
-      let el = item.parentElement;
-      el && el !== root;
-      el = el.parentElement
-    ) {
-      const tag = el.tagName.toLowerCase();
-      if (closes.includes(tag)) {
-        invalid.push(el);
-        break;
+  const ps: Element[] = [];
+  const hs: Element[] = [];
+  const selects: Element[] = [];
+  let stop: Element | null = null;
+  const walk = (parent: Element) => {
+    const parentTag = parent.localName;
+    for (let el = parent.firstElementChild; el; el = el.nextElementSibling) {
+      const tag = el.localName;
+      if (pClosing.has(tag)) markAll(ps);
+      if (headings.has(tag)) markAll(hs);
+      if (FORM_CONTROL_TAGS.includes(tag)) markAll(selects);
+      if ((tag === 'a' || tag === 'button' || tag === 'form') && nearest[tag]) {
+        invalid.push(nearest[tag]!);
       }
-      if (
-        parserSpecialTags.has(tag) &&
-        !LIST_ITEM_SCOPE_EXCEPTIONS.includes(tag)
-      ) {
-        break;
+      if (tag === 'table' && nearest.cell?.localName === 'table') {
+        invalid.push(nearest.cell);
       }
+      const partParents = tagRule(TABLE_PART_PARENTS, tag);
+      if (partParents && !partParents.includes(parentTag)) {
+        contained.push(nearest.table ?? el);
+      }
+      const closes = tagRule(IMPLIED_END_ITEMS, tag);
+      if (closes && stop && closes.includes(stop.localName)) {
+        contained.push(root);
+      }
+      if (parent !== root) {
+        if (parentTag === 'select' && !SELECT_CHILD_TAGS.includes(tag)) {
+          contained.push(parent);
+        }
+        const allowed = tagRule(TABLE_CHILD_TAGS, parentTag);
+        if (allowed && !allowed.includes(tag) && nearest.table) {
+          contained.push(nearest.table);
+        }
+      }
+      if (!el.firstElementChild) continue;
+      const saved = { ...nearest };
+      const savedStop = stop;
+      if (NEAREST_TAGS.includes(tag)) nearest[tag] = el;
+      if (CELL_TAGS.includes(tag)) nearest.cell = el;
+      if (special.has(tag) && !LIST_ITEM_SCOPE_EXCEPTIONS.includes(tag)) {
+        stop = el;
+      }
+      if (tag === 'p') ps.push(el);
+      if (headings.has(tag)) hs.push(el);
+      if (tag === 'select') selects.push(el);
+      walk(el);
+      if (tag === 'p') ps.pop();
+      if (headings.has(tag)) hs.pop();
+      if (tag === 'select') selects.pop();
+      Object.assign(nearest, saved);
+      stop = savedStop;
     }
-  }
-  for (const select of Array.from(root.querySelectorAll('select'))) {
-    if (
-      Array.from(select.children).some(
-        (child) => !SELECT_CHILD_TAGS.includes(child.tagName.toLowerCase())
-      )
-    ) {
-      contained.push(select);
-    }
-  }
-  for (const part of Array.from(
-    root.querySelectorAll(Object.keys(TABLE_CHILD_TAGS).join(','))
-  )) {
-    const allowed = TABLE_CHILD_TAGS[part.tagName.toLowerCase()];
-    const table = closestTag(part, 'TABLE');
-    if (
-      table &&
-      Array.from(part.children).some(
-        (child) => !allowed.includes(child.tagName.toLowerCase())
-      )
-    ) {
-      contained.push(table);
-    }
-  }
+  };
+  walk(root);
   for (const el of invalid) {
     let boundary = el.parentElement;
     while (
       boundary &&
       boundary !== root &&
-      !parserSpecialTags.has(boundary.tagName.toLowerCase())
+      !special.has(boundary.tagName.toLowerCase())
     ) {
       boundary = boundary.parentElement;
     }
