@@ -33,6 +33,10 @@ export default class InlinedScript {
   ) {}
 
   ngOnInit() {
+    const host = this.elRef.nativeElement as HTMLElement;
+    if (Array.from(host.children).some((el) => el.tagName === 'SCRIPT')) {
+      return;
+    }
     const script = this.renderer.createElement('script');
     script.text = this.scriptStr();
     this.renderer.setAttribute(script, 'data-id', this.id());

@@ -429,6 +429,338 @@ const FILTER_PROPS_METHOD = `filterPropsThatWrapperNeeds(allProps: any) {
     }, {});
   }`;
 
+const ANGULAR_STATIC_COMPONENTS = new Set([
+  'Awaiter',
+  'Blocks',
+  'BlocksWrapper',
+  'BlockWrapper',
+  'BuilderScripts',
+  'ComponentRef',
+  'EnableEditor',
+  'ErrorBoundary',
+  'LiveEdit',
+]);
+
+const ANGULAR_CHILDREN_TEMPLATE_SITES = {
+  ComponentRef: {
+    path: '../../../children-projector',
+    children: 'builderChildrenIf(wrapperTemplate, blockChildrenToRender())',
+  },
+  InteractiveElement: {
+    path: '../../children-projector',
+    children: 'builderChildren()',
+    legacyInPlace: true,
+  },
+  LiveEdit: {
+    path: './children-projector',
+    children: 'wrapperTemplate',
+    projectsContent: true,
+  },
+  BlocksWrapper: {
+    path: '../children-projector',
+    children: 'blockswrapperTemplate',
+    projectsContent: true,
+  },
+  EnableEditor: {
+    path: '../../children-projector',
+    children: 'contentwrapperTemplate',
+    projectsContent: true,
+  },
+};
+
+/**
+ * Passes block children to dynamically created components as a `TemplateRef`
+ * (`builderChildren` input, rendered with `ngTemplateOutlet`) instead of DOM
+ * nodes projected through `ngComponentOutlet`'s `content`. Angular cannot
+ * hydrate projected DOM nodes (NG0503); a component without a
+ * `builderChildren` input still gets its children projected, inside
+ * `builder-children-projector`, which skips hydration for that subtree, or
+ * for the enclosing block or content when the children come from an
+ * `<ng-content>` of the outer view. Only a component with a single
+ * `<ng-content>` gets `builderChildren`; 0.26.2 fills only the first slot.
+ * Content hydrates only with `<builder-content [hydrate]="true">`, and never
+ * when it has A/B variations (the browser picks the variant from a cookie, so
+ * the server HTML may hold another variant) or in the Visual Editor or a
+ * preview (the browser fetches other content than the server). Content that
+ * does not hydrate renders its children exactly as before.
+ *
+ * @type {Plugin}
+ */
+const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
+  code: {
+    post: (code, json) => {
+      if (json.name === 'DynamicRenderer') return code;
+      if (json.name === 'ContentVariants') {
+        if (!code.includes('<content-component')) {
+          throw new Error('ContentVariants: <content-component> not found');
+        }
+        const variantsClass = /export default class ContentVariants\b[^{]*\{/;
+        if (!variantsClass.test(code)) {
+          throw new Error('ContentVariants: class declaration not found');
+        }
+        const variantsConstructor =
+          'constructor(public scriptsContext: BuilderScriptsContext) {}';
+        if (!code.includes(variantsConstructor)) {
+          throw new Error('ContentVariants: constructor not found');
+        }
+        code = code
+          .replace(
+            /<content-component\s/g,
+            '<content-component [hydrate]="hydrate()" '
+          )
+          .replace(
+            variantsClass,
+            '$&\n  hydrate = input(false, { transform: builderBooleanAttribute });\n'
+          )
+          .replace(
+            variantsConstructor,
+            'constructor(public scriptsContext: BuilderScriptsContext) {\n    builderInject(BUILDER_HYDRATION, { optional: true })?.recordServerDecisions(builderInject(BuilderElementRef).nativeElement);\n  }'
+          );
+        return `import { booleanAttribute as builderBooleanAttribute, inject as builderInject, ElementRef as BuilderElementRef } from "@angular/core";\nimport { BUILDER_HYDRATION } from "../children-projector";\n${code}`;
+      }
+      if (json.name === 'ContentComponent') {
+        const contentClass = /export default class ContentComponent\b[^{]*\{/;
+        if (!contentClass.test(code)) {
+          throw new Error('ContentComponent: class declaration not found');
+        }
+        const contentSelector = 'selector: "content-component",';
+        if (!code.includes(contentSelector)) {
+          throw new Error('ContentComponent: selector not found');
+        }
+        const contentConstructor = '  constructor() {\n';
+        if (code.split(contentConstructor).length !== 2) {
+          throw new Error('ContentComponent: constructor not found');
+        }
+        code = code
+          .replace(
+            contentSelector,
+            `${contentSelector}\n  providers: [{ provide: BUILDER_HYDRATING, useFactory: () => builderInject(ContentComponent).builderHydrating }],`
+          )
+          .replace(
+            contentClass,
+            '$&\n  hydrate = input(false, { transform: builderBooleanAttribute });\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  private readonly builderHydration = builderInject(BUILDER_HYDRATION, { optional: true });\n  private readonly builderParentHydrating = builderInject(BUILDER_HYDRATING, { optional: true, skipSelf: true });\n  readonly builderHydrating = createBuilderHydrating(() => isBuilderHydrating({ hydration: this.builderHydration, host: this.builderHostRef.nativeElement, parent: this.builderParentHydrating, nested: this.isNestedRender(), hydrate: this.hydrate(), ssrAbTest: this.isSsrAbTest(), content: this.content() }));\n  ngDoCheck() {\n    if (this.builderIsServer) this.builderHostRef.nativeElement.setAttribute("ngSkipHydration", "true");\n  }\n  ngAfterViewChecked() {\n    const host = this.builderHostRef.nativeElement;\n    const hydration = this.builderHydrating();\n    if (!hydration) {\n      if (!host.hasAttribute("ngSkipHydration")) host.setAttribute("ngSkipHydration", "true");\n    } else if (this.builderIsServer && !hydration.forced(host)) {\n      host.removeAttribute("ngSkipHydration");\n      if (!this.isNestedRender()) hydration.markUnhydratableMarkup(host);\n    }\n  }\n'
+          )
+          .replace(
+            contentConstructor,
+            '  constructor() {\n    if (this.builderIsServer) this.builderHostRef.nativeElement.setAttribute("ngSkipHydration", "true");\n'
+          );
+        return `import { booleanAttribute as builderBooleanAttribute, inject as builderInject, ElementRef as BuilderElementRef, PLATFORM_ID as BUILDER_PLATFORM_ID } from "@angular/core";\nimport { isPlatformServer } from "@angular/common";\nimport { BUILDER_HYDRATING, BUILDER_HYDRATION, createBuilderHydrating, isBuilderHydrating } from "../children-projector";\n${code}`;
+      }
+      const upstream = code;
+      code = ((code) => {
+        const ngContent = /<ng-content><\/ng-content\s*>/;
+        const slots = code.match(/<ng-content\b/g)?.length ?? 0;
+        if (
+          slots !== (code.match(/<ng-content><\/ng-content\s*>/g)?.length ?? 0)
+        ) {
+          throw new Error(`${json.name}: unsupported <ng-content>`);
+        }
+        const childrenOutlet =
+          '<ng-container *ngTemplateOutlet="builderChildren()"></ng-container>';
+        let takesChildren = false;
+        if (json.name === 'InteractiveElement') {
+          for (const close of ['</awaiter>', '</live-edit>']) {
+            if (code.split(close).length !== 2) {
+              throw new Error(`InteractiveElement: ${close} not found`);
+            }
+            code = code.replace(close, `${close}${childrenOutlet}`);
+          }
+          takesChildren = true;
+        } else if (!ANGULAR_STATIC_COMPONENTS.has(json.name) && slots === 1) {
+          code = code.replace(ngContent, `${childrenOutlet}$&`);
+          takesChildren = true;
+        }
+        if (takesChildren) {
+          const classDeclaration = new RegExp(
+            `export default class ${json.name}\\b[^{]*\\{`
+          );
+          if (!classDeclaration.test(code)) {
+            throw new Error(`${json.name}: class declaration not found`);
+          }
+          code = code.replace(
+            classDeclaration,
+            '$&\n  builderChildren = input<any>(undefined);\n'
+          );
+          if (
+            !/import \{[^}]*\binput\b[^}]*\} from "@angular\/core"/.test(code)
+          ) {
+            code = `import { input } from "@angular/core";\n${code}`;
+          }
+        }
+
+        const site = ANGULAR_CHILDREN_TEMPLATE_SITES[json.name];
+        if (!site) {
+          if (code.includes('content: myContent()')) {
+            throw new Error(`${json.name}: unhandled dynamic component`);
+          }
+          return code;
+        }
+
+        const outlet =
+          /<ng-container\s*\*ngComponentOutlet="\s*([^;"]+?);\s*inputs:\s*([^;"]+?);\s*content: myContent\(\);\s*"\s*>\s*<\/ng-container>/g;
+        let outlets = 0;
+        let legacy;
+        code = code.replace(outlet, (_, component, inputs) => {
+          outlets++;
+          const children = site.children;
+          const single = `<ng-container *ngComponentOutlet="builderOutlet.component(${component}, ${children}); inputs: builderOutlet.inputs(${component}, ${inputs}, ${children}); content: myContent();"></ng-container>`;
+          if (!site.legacyInPlace) return single;
+          const twin = `builderOutlet.twin(${component})`;
+          legacy = `@else if (builderOutlet.legacy(${component}, ${children})) {<ng-container [builderLegacyChildren]="${children}" [builderLegacyChildrenAt]="builderLegacyAt" #builderLegacy="builderLegacyChildren"></ng-container><ng-template [ngComponentOutlet]="${twin}" [ngComponentOutletInputs]="${inputs}" [ngComponentOutletContent]="builderLegacy.nodes"></ng-template><ng-container builderLegacyAnchor #builderLegacyAt="builderLegacyAnchor"></ng-container>} @else {${single}`;
+          return 'BUILDER_LEGACY_OUTLET';
+        });
+        if (outlets !== 1) {
+          throw new Error(
+            `${json.name}: expected 1 dynamic outlet, found ${outlets}`
+          );
+        }
+        if (legacy) {
+          const legacyElse = /@else\s*\{\s*BUILDER_LEGACY_OUTLET/;
+          if (!legacyElse.test(code)) {
+            throw new Error(
+              `${json.name}: outlet is not the only child of an @else`
+            );
+          }
+          code = code.replace(legacyElse, () => legacy);
+        }
+
+        const updateView =
+          /_updateView\(\) \{\s*this\.myContent\.set\(\[\s*this\.viewContainer\.createEmbeddedView\(this\.\w+\(\)\)\s*\.rootNodes,?\s*\]\);\s*\}/;
+        if (!updateView.test(code)) {
+          throw new Error(`${json.name}: _updateView not found`);
+        }
+        code = code.replace(updateView, (method) =>
+          method.replace(
+            '_updateView() {',
+            '_updateView() {\n    if (this.builderHydrating()) return;'
+          )
+        );
+
+        const viewContainerParam =
+          /private viewContainer: ViewContainerRef,?\s*/;
+        if (!viewContainerParam.test(code)) {
+          throw new Error(`${json.name}: viewContainer injection not found`);
+        }
+        code = code.replace(viewContainerParam, '');
+
+        if (site.legacyInPlace) {
+          if (!code.includes('imports: [CommonModule')) {
+            throw new Error(`${json.name}: component imports not found`);
+          }
+          code = code.replace(
+            'imports: [CommonModule',
+            'imports: [CommonModule, BuilderLegacyAnchor, BuilderLegacyChildren'
+          );
+        }
+        const siteClass = new RegExp(
+          `export default class ${json.name}\\b[^{]*\\{`
+        );
+        if (!siteClass.test(code)) {
+          throw new Error(`${json.name}: class declaration not found`);
+        }
+        code = code.replace(
+          siteClass,
+          `$&\n  private readonly builderInjector = builderInject(BuilderInjector);\n  private get viewContainer() {\n    return this.builderInjector.get(ViewContainerRef);\n  }\n  protected readonly builderHydrating = injectBuilderHydrating();\n  protected readonly builderOutlet = createBuilderOutlet(this.builderHydrating${site.projectsContent ? ', true' : ''});\n${site.children.includes('builderChildrenIf') ? '  protected readonly builderChildrenIf = builderChildrenIf;\n' : ''}`
+        );
+        const imports = site.legacyInPlace
+          ? 'BuilderLegacyAnchor, BuilderLegacyChildren, createBuilderOutlet, injectBuilderHydrating'
+          : `${site.children.includes('builderChildrenIf') ? 'builderChildrenIf, ' : ''}createBuilderOutlet, injectBuilderHydrating`;
+        return `import { inject as builderInject, Injector as BuilderInjector } from "@angular/core";\nimport { ${imports} } from "${site.path}";\n${code}`;
+      })(code);
+      if (ANGULAR_STATIC_COMPONENTS.has(json.name)) return code;
+      const decoratorOf = (source) => {
+        const decorators = source.match(
+          new RegExp(
+            `@Component\\(\\{\\n  selector: "[^"]+",(?:(?!@Component\\()[\\s\\S])*?\\n\\}\\)\\n(?=export default class ${json.name}\\b)`,
+            'g'
+          )
+        );
+        if (decorators?.length !== 1) {
+          throw new Error(`${json.name}: expected 1 component decorator`);
+        }
+        return decorators[0];
+      };
+      const original = decoratorOf(upstream);
+      const hydrating = decoratorOf(code);
+      if (original === hydrating && json.name !== 'Image') return code;
+      const imageSelector = 'selector: "image",';
+      if (json.name === 'Image' && !hydrating.includes(imageSelector)) {
+        throw new Error('Image: selector not found');
+      }
+      const twin =
+        json.name === 'Image'
+          ? hydrating.replace(imageSelector, 'selector: "builder-image",')
+          : hydrating;
+      const childrenInput = '\n  builderChildren = input<any>(undefined);\n';
+      const ownsChildrenInput = code.includes(childrenInput);
+      return `${code.replace(hydrating, () => original).replace(childrenInput, '\n')}\n${twin}export class Builder${json.name} extends ${json.name} {${ownsChildrenInput ? childrenInput : ''}}\n`;
+    },
+  },
+});
+
+/**
+ * Opt-in `blockRenderer` input on `builder-content`: a component that receives
+ * each top-level block of the page as `blockTemplate` (render it with
+ * `ngTemplateOutlet`, context `$implicit: block`) plus the `block` itself, so the
+ * app can wrap blocks, e.g. in `@defer (hydrate ...)`, without the SDK
+ * depending on a newer Angular. Without it, blocks render as before.
+ *
+ * @type {Plugin}
+ */
+const ANGULAR_BLOCK_RENDERER_PLUGIN = () => ({
+  code: {
+    post: (code, json) => {
+      const addInput = (name) => {
+        const classDeclaration = new RegExp(
+          `export default class ${name}\\b[^{]*\\{`
+        );
+        if (!classDeclaration.test(code)) {
+          throw new Error(`${name}: class declaration not found`);
+        }
+        code = `import type { InputSignal as BuilderInputSignal } from "@angular/core";\nimport type { BuilderBlockRenderer } from "../children-projector";\n${code.replace(
+          classDeclaration,
+          '$&\n  blockRenderer: BuilderInputSignal<BuilderBlockRenderer> = input<BuilderBlockRenderer>(undefined);\n'
+        )}`;
+      };
+      if (json.name === 'ContentVariants') {
+        if (!code.includes('<content-component')) {
+          throw new Error('ContentVariants: <content-component> not found');
+        }
+        code = code.replace(
+          /<content-component\s/g,
+          '<content-component [blockRenderer]="blockRenderer()" '
+        );
+        addInput('ContentVariants');
+        return code;
+      }
+      if (json.name === 'ContentComponent') {
+        if (!/<blocks\s/.test(code)) {
+          throw new Error('ContentComponent: <blocks> not found');
+        }
+        code = code.replace(
+          /<blocks\s/,
+          '<blocks [blockRenderer]="isNestedRender() ? undefined : blockRenderer()" '
+        );
+        addInput('ContentComponent');
+        return code;
+      }
+      if (json.name !== 'Blocks') return code;
+      const loop =
+        /@if\(blocks\(\)\)\{\s*(@for \(block of blocks\(\);[\s\S]*?\$index\) \{)\s*(<block\s+\[block\]="block"[\s\S]*?><\/block>)\s*\}\s*\}/;
+      if (!loop.test(code)) {
+        throw new Error('Blocks: block loop not found');
+      }
+      code = code.replace(
+        loop,
+        (_, forBlock, block) =>
+          `@if(blocks() && !(blockRenderer() && !parent())){ ${forBlock}${block}} } @else if (blocks()) {<ng-template #builderBlockTemplate let-block>${block}</ng-template>${forBlock}<ng-container *ngComponentOutlet="blockRenderer(); inputs: { blockTemplate: builderBlockTemplate, block: block }"></ng-container>} }`
+      );
+      addInput('Blocks');
+      return code;
+    },
+  },
+});
+
 /**
  * @type {Plugin}
  */
@@ -588,6 +920,8 @@ module.exports = {
         INJECT_ENABLE_EDITOR_ON_EVENT_HOOKS_PLUGIN,
         ANGULAR_INJECT_UPDATE_VIEW_CODE,
         ANGULAR_NO_WRAP_INTERACTIVE_ELEMENT_PLUGIN,
+        ANGULAR_HYDRATABLE_CHILDREN_PLUGIN,
+        ANGULAR_BLOCK_RENDERER_PLUGIN,
       ],
     },
     solid: {

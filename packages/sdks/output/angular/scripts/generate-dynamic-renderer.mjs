@@ -1,7 +1,9 @@
 import fs from 'fs';
+import path from 'path';
 
 const PATH_TO_DYNAMIC_RENDERER =
   './src/components/dynamic-renderer/dynamic-renderer.ts';
+const PATH_TO_HYDRATION = './src/components/hydration.ts';
 
 if (!fs.existsSync(PATH_TO_DYNAMIC_RENDERER)) {
   console.error(
@@ -9,6 +11,11 @@ if (!fs.existsSync(PATH_TO_DYNAMIC_RENDERER)) {
   );
   process.exit(1);
 }
+
+fs.copyFileSync(
+  '../../overrides/angular/src/components/children-projector.ts',
+  './src/components/children-projector.ts'
+);
 
 console.log('Generating dynamic-renderer.ts component...');
 
@@ -57,11 +64,13 @@ const htmlElements = [
 ];
 
 const voidElements = ['img', 'input'];
+const rawTextElements = ['iframe', 'textarea'];
 
 const dynamicRendererImports = [
-  `import { CommonModule } from '@angular/common';`,
-  `import { Component, ElementRef, input, viewChild, Renderer2, SimpleChanges, TemplateRef, ViewContainerRef, signal, computed } from '@angular/core';`,
+  `import { CommonModule, NgTemplateOutlet } from '@angular/common';`,
+  `import { Component, ElementRef, Injector, inject, input, viewChild, Renderer2, SimpleChanges, TemplateRef, ViewContainerRef, signal, computed } from '@angular/core';`,
   `import { isEmptyElement } from './dynamic-renderer.helpers';`,
+  `import { createBuilderOutlet, injectBuilderHydrating } from '../children-projector';`,
 ];
 
 const dynamicComponentTemplate = (tagName) => {
@@ -106,6 +115,17 @@ export class Dynamic${capitalize(tagName)} {
   ngOnDestroy() {
     this._listenerFns.forEach(fn => fn());
   }
+}
+
+@Component({
+  selector: 'dynamic-${tagName}, Dynamic${capitalize(tagName)}',
+  template: \` <${tagName} #v ${isVoidElement ? '/><ng-container *ngTemplateOutlet="builderChildren()"></ng-container>' : rawTextElements.includes(tagName) ? `></${tagName}>` : `><ng-container *ngTemplateOutlet="builderChildren()"></ng-container></${tagName}>`} \`,
+  standalone: true,
+  imports: [NgTemplateOutlet],
+  styles: [':host { display: contents; }'],
+})
+export class BuilderDynamic${capitalize(tagName)} extends Dynamic${capitalize(tagName)} {
+  builderChildren = input<any>(undefined);
 }`;
 };
 
@@ -123,12 +143,12 @@ const generateComponents = () => {
       <ng-container *ngIf="tagNameIsString()">
         <ng-container
           *ngComponentOutlet="
-            mappedComponent();
-            inputs: {
+            builderOutlet.component(mappedComponent(), tagnameTemplate);
+            inputs: builderOutlet.inputs(mappedComponent(), {
               attributes: attributes(),
               actionAttributes: actionAttributes(),
               tagName: tagName()
-            };
+            }, tagnameTemplate);
             content: myContent
           "
         ></ng-container>
@@ -136,12 +156,12 @@ const generateComponents = () => {
       <ng-container *ngIf="!tagNameIsString() && dynamicTagName() !== ''">
         <ng-container
           *ngComponentOutlet="
-            effectiveTagName();
-            inputs: {
+            builderOutlet.component(effectiveTagName(), tagnameTemplate);
+            inputs: builderOutlet.inputs(effectiveTagName(), {
               attributes: attributes(),
               actionAttributes: actionAttributes(),
               tagName: tagName()
-            };
+            }, tagnameTemplate);
             content: myContent
           "
         ></ng-container>
@@ -149,11 +169,11 @@ const generateComponents = () => {
        <ng-container *ngIf="!tagNameIsString() && dynamicTagName() === ''">
         <ng-container
           *ngComponentOutlet="
-            effectiveTagName();
-            inputs: {
+            builderOutlet.component(effectiveTagName(), tagnameTemplate);
+            inputs: builderOutlet.inputs(effectiveTagName(), {
               attributes: attributes(),
               actionAttributes: actionAttributes(),
-            };
+            }, tagnameTemplate);
             content: myContent
           "
         ></ng-container>
@@ -178,6 +198,8 @@ const generateComponents = () => {
 })
 export default class DynamicRenderer {
   isEmptyElement = isEmptyElement;
+  protected readonly builderHydrating = injectBuilderHydrating();
+  protected readonly builderOutlet = createBuilderOutlet(this.builderHydrating, true);
 
   TagName = input.required<any>();
   attributes = input.required<any>();
@@ -202,7 +224,7 @@ export default class DynamicRenderer {
     return null;
   });
 
-  constructor(private vcRef: ViewContainerRef) {}
+  private readonly injector = inject(Injector);
 
   private tagComponentMap: { [key: string]: any } = {
     ${htmlElements.map((el) => `'${el}': Dynamic${capitalize(el)}`).join(',\n    ')}
@@ -223,7 +245,9 @@ export default class DynamicRenderer {
     } else {
       this._processedTagName.set(this.TagName());
     }
-    this.myContent = [this.vcRef.createEmbeddedView(this.tagnameTemplateRef()).rootNodes];
+    if (!this.builderHydrating()) {
+      this.myContent = [this.injector.get(ViewContainerRef).createEmbeddedView(this.tagnameTemplateRef()).rootNodes];
+    }
   }
 }
 `;
@@ -284,6 +308,63 @@ export default class DynamicRenderer {
     }`;
 
   fs.writeFileSync(PATH_TO_DYNAMIC_RENDERER, dynamicRendererCode);
+
+  const twins = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const file = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) walk(file);
+      else if (file.endsWith('.ts')) {
+        for (const [, twin] of fs
+          .readFileSync(file, 'utf8')
+          .matchAll(/^export class (Builder\w+) extends \w+ \{/gm)) {
+          const from = path
+            .relative('./src/components', file)
+            .replace(/\.ts$/, '');
+          twins.push({ twin, from: from.startsWith('.') ? from : `./${from}` });
+        }
+      }
+    }
+  };
+  walk('./src');
+  const expectedTwins = [
+    'BuilderFormComponent',
+    'BuilderFragmentComponent',
+    'BuilderImage',
+    'BuilderSectionComponent',
+    'BuilderInteractiveElement',
+    'BuilderWrapperDiv',
+    ...htmlElements.map((el) => `BuilderDynamic${capitalize(el)}`),
+  ];
+  const found = twins.map(({ twin }) => twin);
+  if (
+    found.length !== expectedTwins.length ||
+    expectedTwins.some((twin) => !found.includes(twin))
+  ) {
+    console.error(
+      `Unexpected hydrating twins: found ${found.join(', ')}; expected ${expectedTwins.join(', ')}`
+    );
+    process.exit(1);
+  }
+  fs.writeFileSync(
+    PATH_TO_HYDRATION,
+    `import { makeEnvironmentProviders } from '@angular/core';
+import BuilderChildrenProjector, { BUILDER_HYDRATION, createBuilderHydration } from './children-projector';
+${twins.map(({ twin, from }, i) => `import { ${twin} as Twin${i} } from '${from}';`).join('\n')}
+
+const twins = [${twins.map((_, i) => `Twin${i}`).join(', ')}];
+
+export const provideBuilderHydration = () => {
+  const twinsByComponent = new Map(twins.map((twin) => [Object.getPrototypeOf(twin), twin]));
+  return makeEnvironmentProviders([
+    {
+      provide: BUILDER_HYDRATION,
+      useValue: createBuilderHydration(twinsByComponent, BuilderChildrenProjector),
+    },
+  ]);
+};
+`
+  );
 
   console.log('Dynamic renderer generated successfully!');
 };

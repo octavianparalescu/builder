@@ -182,3 +182,25 @@ export default class DynamicDiv {
     this._listenerFns.forEach((fn) => fn());
   }
 }
+
+@Component({
+  selector: 'dynamic-div, DynamicDiv',
+  template: `
+    <div
+      #v
+      (click)="onClick() && onClick()($event)"
+      (mouseenter)="onMouseEnter() && onMouseEnter()($event)"
+    >
+      <ng-container *ngTemplateOutlet="builderChildren()"></ng-container>
+    </div>
+  `,
+  standalone: true,
+  imports: [CommonModule],
+  styles: [
+    ':host { display: contents; }',
+    '.this-blocks-wrapper { display: flex; flex-direction: column; align-items: stretch; }',
+  ],
+})
+export class BuilderWrapperDiv extends DynamicDiv {
+  builderChildren = input<any>(undefined);
+}
