@@ -11,13 +11,24 @@ import {
   ViewContainerRef,
   inject,
   input,
-  output,
   reflectComponentType,
   signal,
-  untracked,
 } from '@angular/core';
 import { isEditing } from '../functions/is-editing';
 import { isPreviewing } from '../functions/is-previewing';
+
+declare module '../types/components' {
+  interface ComponentInfo {
+    /**
+     * Angular, in content rendered with `[hydrate]="true"`: pass the block's
+     * children to the component's `builderChildren` input so they hydrate.
+     * Set it only when no element the HTML parser closes early or restructures
+     * (`a`, `button`, `form`, `h1`-`h6`, `li`, `p`, `select`, table elements,
+     * ...) sits between the children and the component's host.
+     */
+    hydrateChildren?: boolean;
+  }
+}
 
 const P_CLOSING_TAGS =
   'address,article,aside,blockquote,center,dd,details,dialog,dir,div,dl,dt,fieldset,figcaption,figure,footer,form,h1,h2,h3,h4,h5,h6,header,hgroup,hr,li,listing,main,menu,nav,ol,p,plaintext,pre,search,section,summary,table,ul,xmp';
@@ -82,12 +93,6 @@ const CELL_CLOSING_TAGS = [
   'td',
   'th',
 ];
-
-const SLOT_CLOSING_TAGS = new Set(
-  'button,caption,colgroup,dd,dt,h1,h2,h3,h4,h5,h6,iframe,li,math,nobr,noembed,noframes,noscript,optgroup,option,plaintext,rb,rp,rt,rtc,script,select,style,svg,table,tbody,template,textarea,tfoot,th,thead,title,tr,xmp'.split(
-    ','
-  )
-);
 
 const tagRule = (rules: Record<string, string[]>, tag: string) =>
   Object.prototype.hasOwnProperty.call(rules, tag) ? rules[tag] : undefined;
@@ -259,16 +264,30 @@ export const markUnhydratableMarkup = (root: Element) => {
 
 type BuilderHydrationOutlet = ReturnType<typeof createHydratingOutlet>;
 
+type BuilderRegistrations = Record<
+  string,
+  { component?: unknown; hydrateChildren?: boolean } | undefined
+>;
+
+type BuilderHydratesChildren = (
+  component: unknown,
+  registrations: BuilderRegistrations | undefined,
+  name: unknown
+) => boolean;
+
 export interface BuilderHydration {
   createOutlet: (
     injector: Injector,
     projectsContent: boolean
   ) => BuilderHydrationOutlet;
   markUnhydratableMarkup: (root: Element) => void;
-  deferRoot: (host: Element) => void;
   recordServerDecisions: (host: Element) => void;
   serverDecision: (host: Element) => boolean | undefined;
   forced: (host: Element) => boolean;
+  eager: (
+    block: unknown,
+    registrations: BuilderRegistrations | undefined
+  ) => boolean;
 }
 
 export const BUILDER_HYDRATION = new InjectionToken<BuilderHydration>(
@@ -282,6 +301,10 @@ export type BuilderBlockRenderer = Type<unknown> | undefined;
 export const BUILDER_HYDRATING = new InjectionToken<BuilderHydrating>(
   'BUILDER_HYDRATING'
 );
+
+export const BUILDER_REGISTERED_COMPONENTS = new InjectionToken<
+  () => BuilderRegistrations | undefined
+>('BUILDER_REGISTERED_COMPONENTS');
 
 export const createBuilderHydrating = (
   compute: BuilderHydrating
@@ -365,47 +388,6 @@ const createBuilderChildInputs = () => {
   };
 };
 
-const closesSlot = (
-  host: Element,
-  block: { children?: { id?: string }[] } | undefined
-) => {
-  for (const template of Array.from(host.querySelectorAll('template'))) {
-    if ((template as HTMLTemplateElement).content?.querySelector('block')) {
-      return true;
-    }
-  }
-  const ids = (block?.children ?? [])
-    .map((child) => child?.id)
-    .filter((id): id is string => !!id && /^[\w-]+$/.test(id));
-  let el =
-    (ids.length &&
-      host.querySelector(ids.map((id) => `[builder-id="${id}"]`).join())) ||
-    host.querySelector('block');
-  while (el && el !== host && el.localName !== 'block') el = el.parentElement;
-  if (!el || el === host) return false;
-  el = el.parentElement;
-  while (el && el !== host && !SLOT_CLOSING_TAGS.has(el.localName)) {
-    el = el.parentElement;
-  }
-  return !!el && el !== host;
-};
-
-const contentRoot = (host: Element) => {
-  let root: Element | null = null;
-  for (let el = host.parentElement; el; el = el.parentElement) {
-    if (el.localName === 'content-component') root = el;
-  }
-  return root;
-};
-
-const clearScanMarks = (root: Element) => {
-  for (const el of [root, ...Array.from(root.querySelectorAll('block'))]) {
-    if (el.getAttribute('ngSkipHydration') === '') {
-      el.removeAttribute('ngSkipHydration');
-    }
-  }
-};
-
 const skipBoundary = (host: Element, forced: WeakSet<Element>) => {
   let boundary = host.parentElement;
   while (
@@ -425,42 +407,30 @@ const createHydratingOutlet = (
   twins: Map<unknown, unknown>,
   projector: Type<unknown>,
   forced: WeakSet<Element>,
-  fallBack: (root: Element) => void,
+  hydratesChildren: BuilderHydratesChildren,
   injector: Injector,
   projectsContent: boolean
 ) => {
   const childInputs = createBuilderChildInputs();
   let last: { component: any; inputs: any; children: any } | undefined;
   const twin = (component: any) => twins.get(component) ?? component;
-  const isServer = isPlatformServer(injector.get(PLATFORM_ID));
-  const skipsContent = projectsContent && isServer;
-  const host = injector.get(ElementRef).nativeElement as Element;
-  const fallback = signal(
-    !isServer && host.getAttribute('ngSkipHydration') === ''
-  );
-  let clientDecided = false;
+  const skipsContent =
+    projectsContent && isPlatformServer(injector.get(PLATFORM_ID));
+  const registrations = injector.get(BUILDER_REGISTERED_COMPONENTS, null);
   return {
     twin,
-    legacy: (component: any, children: TemplateRef<any> | undefined) =>
-      fallback() || useProjector(twin(component), children),
-    guard: (
+    legacy: (
       component: any,
       children: TemplateRef<any> | undefined,
-      block: { children?: { id?: string }[] } | undefined
+      block?: { component?: { name?: string } }
     ) =>
-      untracked(() => {
-        if (fallback() || clientDecided) return fallback();
-        clientDecided = !isServer;
-        if (!children || !acceptsChildren(twin(component))) return false;
-        if (!closesSlot(host, block)) return false;
-        fallback.set(true);
-        return true;
-      }),
-    fellBack: () => untracked(fallback),
-    rescan: () => {
-      const root = isServer ? contentRoot(host) : null;
-      if (root) fallBack(root);
-    },
+      !!children &&
+      !!component &&
+      !hydratesChildren(
+        twin(component),
+        registrations?.(),
+        block?.component?.name
+      ),
     component: (component: any, children: TemplateRef<any> | undefined) => {
       const target = twin(component);
       if (!useProjector(target, children)) return target;
@@ -492,27 +462,43 @@ const createHydratingOutlet = (
 
 export const createBuilderHydration = (
   twins: Map<unknown, unknown>,
-  projector: Type<unknown>
+  projector: Type<unknown>,
+  hydratingChildren: unknown[] = []
 ): BuilderHydration => {
   const serverDecisions = new WeakMap<Element, boolean>();
   const forced = new WeakSet<Element>();
-  const deferred = new WeakSet<Element>();
-  const rescans = new WeakSet<Element>();
-  const fallBack = (root: Element) => {
-    if (forced.has(root)) return;
-    if (deferred.has(root)) {
-      forced.add(root);
-      root.setAttribute('ngSkipHydration', 'true');
-      return;
+  const safe = new Set(hydratingChildren);
+  const hydratesChildren: BuilderHydratesChildren = (
+    component,
+    registrations,
+    name
+  ) =>
+    acceptsChildren(component) &&
+    (safe.has(component) ||
+      (typeof name === 'string' &&
+        registrations?.[name]?.hydrateChildren === true));
+  const eagerBlocks = new WeakMap<object, boolean>();
+  const holdsLegacyChildren = (
+    node: any,
+    registrations: BuilderRegistrations | undefined
+  ): boolean => {
+    if (!node || typeof node !== 'object') return false;
+    if (Array.isArray(node)) {
+      return node.some((item) => holdsLegacyChildren(item, registrations));
     }
-    if (rescans.has(root)) return;
-    rescans.add(root);
-    queueMicrotask(() => {
-      rescans.delete(root);
-      if (forced.has(root)) return;
-      clearScanMarks(root);
-      markUnhydratableMarkup(root);
-    });
+    const name = node.component?.name;
+    const component =
+      typeof name === 'string' ? registrations?.[name]?.component : undefined;
+    if (
+      component &&
+      node.children?.length &&
+      !hydratesChildren(twins.get(component) ?? component, registrations, name)
+    ) {
+      return true;
+    }
+    return Object.keys(node).some((key) =>
+      holdsLegacyChildren(node[key], registrations)
+    );
   };
   return {
     createOutlet: (injector, projectsContent) =>
@@ -520,14 +506,11 @@ export const createBuilderHydration = (
         twins,
         projector,
         forced,
-        fallBack,
+        hydratesChildren,
         injector,
         projectsContent
       ),
     markUnhydratableMarkup,
-    deferRoot: (host) => {
-      deferred.add(host);
-    },
     recordServerDecisions: (host) => {
       const editing = isEditing() || isPreviewing();
       for (const child of Array.from(host.children)) {
@@ -541,6 +524,15 @@ export const createBuilderHydration = (
     },
     serverDecision: (host) => serverDecisions.get(host),
     forced: (host) => forced.has(host),
+    eager: (block, registrations) => {
+      if (!block || typeof block !== 'object') return false;
+      let eager = eagerBlocks.get(block);
+      if (eager === undefined) {
+        eager = holdsLegacyChildren(block, registrations);
+        eagerBlocks.set(block, eager);
+      }
+      return eager;
+    },
   };
 };
 
@@ -558,15 +550,11 @@ export const createBuilderOutlet = (
   };
   return {
     twin: (component: any) => hydratingOutlet()?.twin(component) ?? component,
-    legacy: (component: any, children: TemplateRef<any> | undefined) =>
-      !!hydratingOutlet()?.legacy(component, children),
-    guard: (
+    legacy: (
       component: any,
       children: TemplateRef<any> | undefined,
-      block: { children?: { id?: string }[] } | undefined
-    ) => !!hydratingOutlet()?.guard(component, children, block),
-    fellBack: () => !!hydratingOutlet()?.fellBack(),
-    rescan: () => hydratingOutlet()?.rescan(),
+      block?: { component?: { name?: string } }
+    ) => !!hydratingOutlet()?.legacy(component, children, block),
     component: (component: any, children: TemplateRef<any> | undefined) => {
       const target = hydratingOutlet();
       return target ? target.component(component, children) : component;
@@ -613,6 +601,21 @@ export default class BuilderChildrenProjector {
   }
 }
 
+@Component({
+  selector: 'builder-eager-block',
+  standalone: true,
+  imports: [CommonModule],
+  host: { ngSkipHydration: 'true' },
+  template: `<ng-container
+    *ngTemplateOutlet="blockTemplate(); context: { $implicit: block() }"
+  ></ng-container>`,
+  styles: [':host { display: contents; }'],
+})
+export class BuilderEagerBlock {
+  blockTemplate = input<TemplateRef<any> | undefined>(undefined);
+  block = input<any>(undefined);
+}
+
 @Directive({
   selector: '[builderLegacyAnchor]',
   standalone: true,
@@ -643,7 +646,6 @@ export class BuilderLegacyChildren {
     alias: 'builderLegacyChildrenAt',
   });
   nodes: any[][] | undefined;
-  readonly done = output<Element | null>({ alias: 'builderLegacyRendered' });
 
   private readonly anchor = inject(ElementRef);
   private readonly isServer = isPlatformServer(inject(PLATFORM_ID));
@@ -664,9 +666,5 @@ export class BuilderLegacyChildren {
         ''
       );
     }
-  }
-
-  ngAfterViewInit() {
-    this.done.emit((this.anchor.nativeElement as Comment).nextElementSibling);
   }
 }

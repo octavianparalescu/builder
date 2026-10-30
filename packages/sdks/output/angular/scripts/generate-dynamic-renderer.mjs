@@ -346,6 +346,10 @@ export default class DynamicRenderer {
     );
     process.exit(1);
   }
+  const hydratingChildren = [
+    'BuilderSectionComponent',
+    'BuilderFragmentComponent',
+  ].map((twin) => `Twin${found.indexOf(twin)}`);
   fs.writeFileSync(
     PATH_TO_HYDRATION,
     `import { makeEnvironmentProviders } from '@angular/core';
@@ -359,7 +363,7 @@ export const provideBuilderHydration = () => {
   return makeEnvironmentProviders([
     {
       provide: BUILDER_HYDRATION,
-      useValue: createBuilderHydration(twinsByComponent, BuilderChildrenProjector),
+      useValue: createBuilderHydration(twinsByComponent, BuilderChildrenProjector, [${hydratingChildren.join(', ')}]),
     },
   ]);
 };

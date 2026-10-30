@@ -478,6 +478,9 @@ const ANGULAR_CHILDREN_TEMPLATE_SITES = {
  * for the enclosing block or content when the children come from an
  * `<ng-content>` of the outer view. Only a component with a single
  * `<ng-content>` gets `builderChildren`; 0.26.2 fills only the first slot.
+ * A registered component gets `builderChildren` only when its registration
+ * sets `hydrateChildren` (Section and Fragment always do); otherwise its
+ * children are projected as in 0.26.2 and it skips hydration.
  * Content hydrates only with `<builder-content [hydrate]="true">`, and never
  * when it has A/B variations (the browser picks the variant from a cookie, so
  * the server HTML may hold another variant) or in the Visual Editor or a
@@ -534,17 +537,17 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
         code = code
           .replace(
             contentSelector,
-            `${contentSelector}\n  providers: [{ provide: BUILDER_HYDRATING, useFactory: () => builderInject(ContentComponent).builderHydrating }],`
+            `${contentSelector}\n  providers: [{ provide: BUILDER_HYDRATING, useFactory: () => builderInject(ContentComponent).builderHydrating }, { provide: BUILDER_REGISTERED_COMPONENTS, useFactory: () => builderInject(ContentComponent).registeredComponents }],`
           )
           .replace(
             contentClass,
-            '$&\n  hydrate = input(false, { transform: builderBooleanAttribute });\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  private readonly builderHydration = builderInject(BUILDER_HYDRATION, { optional: true });\n  private readonly builderParentHydrating = builderInject(BUILDER_HYDRATING, { optional: true, skipSelf: true });\n  readonly builderHydrating = createBuilderHydrating(() => isBuilderHydrating({ hydration: this.builderHydration, host: this.builderHostRef.nativeElement, parent: this.builderParentHydrating, nested: this.isNestedRender(), hydrate: this.hydrate(), ssrAbTest: this.isSsrAbTest(), content: this.content() }));\n  ngDoCheck() {\n    if (!this.builderIsServer) return;\n    this.builderHostRef.nativeElement.setAttribute("ngSkipHydration", "true");\n    if (this.blockRenderer() && !this.isNestedRender()) this.builderHydration?.deferRoot(this.builderHostRef.nativeElement);\n  }\n  ngAfterViewChecked() {\n    const host = this.builderHostRef.nativeElement;\n    const hydration = this.builderHydrating();\n    if (!hydration) {\n      if (!host.hasAttribute("ngSkipHydration")) host.setAttribute("ngSkipHydration", "true");\n    } else if (this.builderIsServer && !hydration.forced(host)) {\n      host.removeAttribute("ngSkipHydration");\n      if (!this.isNestedRender()) hydration.markUnhydratableMarkup(host);\n    }\n  }\n'
+            '$&\n  hydrate = input(false, { transform: builderBooleanAttribute });\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  private readonly builderHydration = builderInject(BUILDER_HYDRATION, { optional: true });\n  private readonly builderParentHydrating = builderInject(BUILDER_HYDRATING, { optional: true, skipSelf: true });\n  readonly builderHydrating = createBuilderHydrating(() => isBuilderHydrating({ hydration: this.builderHydration, host: this.builderHostRef.nativeElement, parent: this.builderParentHydrating, nested: this.isNestedRender(), hydrate: this.hydrate(), ssrAbTest: this.isSsrAbTest(), content: this.content() }));\n  ngDoCheck() {\n    if (this.builderIsServer) this.builderHostRef.nativeElement.setAttribute("ngSkipHydration", "true");\n  }\n  ngAfterViewChecked() {\n    const host = this.builderHostRef.nativeElement;\n    const hydration = this.builderHydrating();\n    if (!hydration) {\n      if (!host.hasAttribute("ngSkipHydration")) host.setAttribute("ngSkipHydration", "true");\n    } else if (this.builderIsServer && !hydration.forced(host)) {\n      host.removeAttribute("ngSkipHydration");\n      if (!this.isNestedRender()) hydration.markUnhydratableMarkup(host);\n    }\n  }\n'
           )
           .replace(
             contentConstructor,
             '  constructor() {\n    if (this.builderIsServer) this.builderHostRef.nativeElement.setAttribute("ngSkipHydration", "true");\n'
           );
-        return `import { booleanAttribute as builderBooleanAttribute, inject as builderInject, ElementRef as BuilderElementRef, PLATFORM_ID as BUILDER_PLATFORM_ID } from "@angular/core";\nimport { isPlatformServer } from "@angular/common";\nimport { BUILDER_HYDRATING, BUILDER_HYDRATION, createBuilderHydrating, isBuilderHydrating } from "../children-projector";\n${code}`;
+        return `import { booleanAttribute as builderBooleanAttribute, inject as builderInject, ElementRef as BuilderElementRef, PLATFORM_ID as BUILDER_PLATFORM_ID } from "@angular/core";\nimport { isPlatformServer } from "@angular/common";\nimport { BUILDER_HYDRATING, BUILDER_HYDRATION, BUILDER_REGISTERED_COMPONENTS, createBuilderHydrating, isBuilderHydrating } from "../children-projector";\n${code}`;
       }
       const upstream = code;
       code = ((code) => {
@@ -606,7 +609,7 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
           const single = `<ng-container *ngComponentOutlet="builderOutlet.component(${component}, ${children}); inputs: builderOutlet.inputs(${component}, ${inputs}, ${children}); content: myContent();"></ng-container>`;
           if (!site.legacyInPlace) return single;
           const twin = `builderOutlet.twin(${component})`;
-          legacy = `@else if (builderOutlet.legacy(${component}, ${children})) {<ng-container [builderLegacyChildren]="${children}" [builderLegacyChildrenAt]="builderLegacyAt" #builderLegacy="builderLegacyChildren" (builderLegacyRendered)="builderLegacyRendered($event)"></ng-container><ng-template [ngComponentOutlet]="${twin}" [ngComponentOutletInputs]="${inputs}" [ngComponentOutletContent]="builderLegacy.nodes"></ng-template><ng-container builderLegacyAnchor #builderLegacyAt="builderLegacyAnchor"></ng-container>} @else {${single}`;
+          legacy = `@else if (builderOutlet.legacy(${component}, ${children}, block())) {<ng-container [builderLegacyChildren]="${children}" [builderLegacyChildrenAt]="builderLegacyAt" #builderLegacy="builderLegacyChildren"></ng-container><ng-template [ngComponentOutlet]="${twin}" [ngComponentOutletInputs]="${inputs}" [ngComponentOutletContent]="builderLegacy.nodes"></ng-template><ng-container builderLegacyAnchor #builderLegacyAt="builderLegacyAnchor"></ng-container>} @else {${single}`;
           return 'BUILDER_LEGACY_OUTLET';
         });
         if (outlets !== 1) {
@@ -693,26 +696,7 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
           : hydrating;
       const childrenInput = '\n  builderChildren = input<any>(undefined);\n';
       const ownsChildrenInput = code.includes(childrenInput);
-      const slotGuard =
-        json.name === 'InteractiveElement'
-          ? `  override ngAfterViewInit() {
-    if (!this.builderOutlet.guard(this.Wrapper(), this.builderChildren(), this.block())) {
-      super.ngAfterViewInit();
-    }
-  }
-  ngAfterViewChecked() {
-    this.builderOutlet.guard(this.Wrapper(), this.builderChildren(), this.block());
-  }
-  builderLegacyRendered(host: Element | null) {
-    if (!this.builderOutlet.fellBack()) return;
-    if (host && !this.hasAttributesInput(this.Wrapper())) {
-      this.updateAttributes(host as HTMLElement, this.attributes());
-    }
-    this.builderOutlet.rescan();
-  }
-`
-          : '';
-      return `${code.replace(hydrating, () => original).replace(childrenInput, '\n')}\n${twin}export class Builder${json.name} extends ${json.name} {${ownsChildrenInput ? childrenInput : ''}${slotGuard}}\n`;
+      return `${code.replace(hydrating, () => original).replace(childrenInput, '\n')}\n${twin}export class Builder${json.name} extends ${json.name} {${ownsChildrenInput ? childrenInput : ''}}\n`;
     },
   },
 });
@@ -722,7 +706,10 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
  * each top-level block of the page as `blockTemplate` (render it with
  * `ngTemplateOutlet`, context `$implicit: block`) plus the `block` itself, so the
  * app can wrap blocks, e.g. in `@defer (hydrate ...)`, without the SDK
- * depending on a newer Angular. Without it, blocks render as before.
+ * depending on a newer Angular. Without it, blocks render as before. It is
+ * used only when the content hydrates; a top-level block that holds a
+ * component whose children are projected renders without it and skips
+ * hydration.
  *
  * @type {Plugin}
  */
@@ -772,10 +759,17 @@ const ANGULAR_BLOCK_RENDERER_PLUGIN = () => ({
       code = code.replace(
         loop,
         (_, forBlock, block) =>
-          `@if(blocks() && !(blockRenderer() && !parent())){ ${forBlock}${block}} } @else if (blocks()) {<ng-template #builderBlockTemplate let-block>${block}</ng-template>${forBlock}<ng-container *ngComponentOutlet="blockRenderer(); inputs: { blockTemplate: builderBlockTemplate, block: block }"></ng-container>} }`
+          `@if(blocks() && !(blockRenderer() && !parent())){ ${forBlock}${block}} } @else if (blocks()) {<ng-template #builderBlockTemplate let-block>${block}</ng-template>${forBlock}<ng-container *ngComponentOutlet="builderBlockRenderer(block); inputs: { blockTemplate: builderBlockTemplate, block: block }"></ng-container>} }`
       );
       addInput('Blocks');
-      return code;
+      const blocksClass = /export default class Blocks\b[^{]*\{/;
+      if (!blocksClass.test(code)) {
+        throw new Error('Blocks: class declaration not found');
+      }
+      return `import { BuilderEagerBlock, injectBuilderHydrating } from "../children-projector";\n${code.replace(
+        blocksClass,
+        '$&\n  private readonly builderHydrating = injectBuilderHydrating();\n  protected builderBlockRenderer(block: unknown) {\n    return this.builderHydrating()?.eager(block, this.registeredComponents()) ? BuilderEagerBlock : this.blockRenderer();\n  }\n'
+      )}`;
     },
   },
 });
