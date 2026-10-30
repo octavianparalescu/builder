@@ -542,13 +542,13 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
           )
           .replace(
             contentClass,
-            '$&\n  hydrate = input(false, { transform: builderBooleanAttribute });\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  private readonly builderHydration = builderInject(BUILDER_HYDRATION, { optional: true });\n  private readonly builderParentHydrating = builderInject(BUILDER_HYDRATING, { optional: true, skipSelf: true });\n  readonly builderHydrating = createBuilderHydrating(() => isBuilderHydrating({ hydration: this.builderHydration, host: this.builderHostRef.nativeElement, parent: this.builderParentHydrating, nested: this.isNestedRender(), hydrate: this.hydrate(), ssrAbTest: this.isSsrAbTest(), content: this.content(), wrappers: [this.blocksWrapper(), this.contentWrapper()] }));\n  ngDoCheck() {\n    if (this.builderIsServer) this.builderHostRef.nativeElement.setAttribute("ngSkipHydration", "true");\n  }\n  ngAfterViewChecked() {\n    const host = this.builderHostRef.nativeElement;\n    const hydration = this.builderHydrating();\n    if (!hydration) {\n      if (!host.hasAttribute("ngSkipHydration")) host.setAttribute("ngSkipHydration", "true");\n    } else if (this.builderIsServer && !hydration.forced(host)) {\n      host.removeAttribute("ngSkipHydration");\n      if (!this.isNestedRender()) hydration.markUnhydratableMarkup(host);\n    }\n  }\n'
+            '$&\n  hydrate = input(false, { transform: builderBooleanAttribute });\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  private readonly builderHydration = builderInject(BUILDER_HYDRATION, { optional: true });\n  private readonly builderParentHydrating = builderInject(BUILDER_HYDRATING, { optional: true, skipSelf: true });\n  readonly builderHydrating = createBuilderHydrating(() => isBuilderHydrating({ hydration: this.builderHydration, host: this.builderHostRef.nativeElement, parent: this.builderParentHydrating, nested: this.isNestedRender(), hydrate: this.hydrate(), ssrAbTest: this.isSsrAbTest(), content: this.content(), wrappers: [this.blocksWrapper(), this.contentWrapper()] }));\n  ngDoCheck() {\n    if (this.builderIsServer) this.builderHostRef.nativeElement.setAttribute("ngSkipHydration", "true");\n  }\n  ngAfterViewChecked() {\n    const host = this.builderHostRef.nativeElement;\n    const hydration = this.builderHydrating();\n    if (!hydration) {\n      if (!host.hasAttribute("ngSkipHydration")) host.setAttribute("ngSkipHydration", "true");\n    } else if (this.builderIsServer && !hydration.forced(host)) {\n      host.removeAttribute("ngSkipHydration");\n      if (!this.isNestedRender()) {\n        hydration.markUnhydratableMarkup(host);\n        if ((typeof ngDevMode === "undefined" || ngDevMode) && this.blockRenderer()) reportSkipsInDeferredBlocks(host);\n      }\n    }\n  }\n'
           )
           .replace(
             contentConstructor,
             '  constructor() {\n    if (this.builderIsServer) this.builderHostRef.nativeElement.setAttribute("ngSkipHydration", "true");\n'
           );
-        return `import { booleanAttribute as builderBooleanAttribute, inject as builderInject, ElementRef as BuilderElementRef, PLATFORM_ID as BUILDER_PLATFORM_ID } from "@angular/core";\nimport { isPlatformServer } from "@angular/common";\nimport { BUILDER_HYDRATING, BUILDER_HYDRATION, BUILDER_REGISTERED_COMPONENTS, createBuilderHydrating, isBuilderHydrating } from "../children-projector";\n${code}`;
+        return `import { booleanAttribute as builderBooleanAttribute, inject as builderInject, ElementRef as BuilderElementRef, PLATFORM_ID as BUILDER_PLATFORM_ID } from "@angular/core";\nimport { isPlatformServer } from "@angular/common";\nimport { BUILDER_HYDRATING, BUILDER_HYDRATION, BUILDER_REGISTERED_COMPONENTS, createBuilderHydrating, isBuilderHydrating, reportSkipsInDeferredBlocks } from "../children-projector";\ndeclare const ngDevMode: unknown;\n${code}`;
       }
       const upstream = code;
       code = ((code) => {
@@ -710,8 +710,10 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
  * depending on a newer Angular. Without it, blocks render as before. It is
  * used only when the content hydrates. A top-level block renders without it
  * and skips hydration when it holds a component whose children are projected,
- * a link while `linkComponent` has no `builderChildren` input, a
- * `component.name` binding, or a Symbol whose content is fetched or bound.
+ * a link while the app sets `linkComponent`, a `component.name` binding, or a
+ * Symbol whose content is fetched, bound or has A/B variations. In dev mode
+ * the server warns about any `ngSkipHydration` left inside a block that
+ * renders through it.
  *
  * @type {Plugin}
  */

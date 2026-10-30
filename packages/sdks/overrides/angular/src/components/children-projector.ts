@@ -303,6 +303,25 @@ export interface BuilderHydration {
   ) => boolean;
 }
 
+let reportedSkips: WeakSet<Element> | undefined;
+
+export const reportSkipsInDeferredBlocks = (root: Element) => {
+  const sections = root.querySelector('blocks .builder-blocks')?.children;
+  for (const section of Array.from(sections ?? [])) {
+    if (section.localName === 'builder-eager-block') continue;
+    const skipped = section.hasAttribute('ngSkipHydration')
+      ? section
+      : section.querySelector('[ngskiphydration]');
+    if (!skipped || (reportedSkips ??= new WeakSet()).has(skipped)) continue;
+    reportedSkips.add(skipped);
+    console.warn(
+      `[builder] <${skipped.localName}> skips hydration inside the deferred top-level block ${
+        section.querySelector('[builder-id]')?.getAttribute('builder-id') ?? ''
+      }: until that block hydrates, its first interaction is lost.`
+    );
+  }
+};
+
 export const BUILDER_HYDRATION = new InjectionToken<BuilderHydration>(
   'BUILDER_HYDRATION'
 );
@@ -499,23 +518,26 @@ export const createBuilderHydration = (
   const rendersEagerly = (
     node: any,
     registrations: BuilderRegistrations | undefined,
-    linksProject: boolean
+    customLinks: boolean,
+    isBlock: boolean
   ): boolean => {
     if (!node || typeof node !== 'object') return false;
     if (Array.isArray(node)) {
       return node.some((item) =>
-        rendersEagerly(item, registrations, linksProject)
+        rendersEagerly(item, registrations, customLinks, isBlock)
       );
     }
     const name = node.component?.name;
     const registration =
       typeof name === 'string' ? registrations?.[name] : undefined;
     const options = node.component?.options;
+    const symbol = options?.symbol;
     const bindings = Object.keys(node.bindings || {});
     if (
       bindings.includes('component.name') ||
       (name === 'Symbol' &&
-        (!options?.symbol?.content ||
+        (!symbol?.content ||
+          Object.keys(symbol.content.variations || {}).length ||
           bindings.some(
             (key) =>
               key === 'component.options.symbol' ||
@@ -525,12 +547,15 @@ export const createBuilderHydration = (
       return true;
     }
     if (
-      linksProject &&
-      (node.tagName === 'a' ||
-        node.href ||
-        node.properties?.href ||
-        bindings.includes('href') ||
-        bindings.includes('properties.href') ||
+      customLinks &&
+      (((isBlock || node['@type'] === '@builder.io/sdk:Element') &&
+        (node.tagName === 'a' ||
+          node.href ||
+          node.properties?.href ||
+          node.linkUrl ||
+          bindings.some((key) =>
+            ['href', 'properties.href', 'linkUrl'].includes(key)
+          ))) ||
         (name === 'Core:Button'
           ? options?.link || bindings.includes('component.options.link')
           : name === 'Columns'
@@ -552,7 +577,7 @@ export const createBuilderHydration = (
       return true;
     }
     return Object.keys(node).some((key) =>
-      rendersEagerly(node[key], registrations, linksProject)
+      rendersEagerly(node[key], registrations, customLinks, key === 'children')
     );
   };
   return {
@@ -586,7 +611,7 @@ export const createBuilderHydration = (
       if (!decided) eagerBlocks.set(registrations, (decided = new WeakMap()));
       let eager = decided.get(block);
       if (eager === undefined) {
-        eager = rendersEagerly(block, registrations, projects(linkComponent));
+        eager = rendersEagerly(block, registrations, !!linkComponent, true);
         decided.set(block, eager);
       }
       return eager;
