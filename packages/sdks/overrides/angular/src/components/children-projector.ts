@@ -265,6 +265,7 @@ export interface BuilderHydration {
     projectsContent: boolean
   ) => BuilderHydrationOutlet;
   markUnhydratableMarkup: (root: Element) => void;
+  deferRoot: (host: Element) => void;
   recordServerDecisions: (host: Element) => void;
   serverDecision: (host: Element) => boolean | undefined;
   forced: (host: Element) => boolean;
@@ -364,17 +365,37 @@ const createBuilderChildInputs = () => {
   };
 };
 
-const findSlotChild = (
+const closesSlot = (
   host: Element,
   block: { children?: { id?: string }[] } | undefined
 ) => {
+  for (const template of Array.from(host.querySelectorAll('template'))) {
+    if ((template as HTMLTemplateElement).content?.querySelector('block')) {
+      return true;
+    }
+  }
   const ids = (block?.children ?? [])
     .map((child) => child?.id)
     .filter((id): id is string => !!id && /^[\w-]+$/.test(id));
-  if (!ids.length) return null;
-  let el = host.querySelector(ids.map((id) => `[builder-id="${id}"]`).join());
+  let el =
+    (ids.length &&
+      host.querySelector(ids.map((id) => `[builder-id="${id}"]`).join())) ||
+    host.querySelector('block');
   while (el && el !== host && el.localName !== 'block') el = el.parentElement;
-  return el === host ? null : el;
+  if (!el || el === host) return false;
+  el = el.parentElement;
+  while (el && el !== host && !SLOT_CLOSING_TAGS.has(el.localName)) {
+    el = el.parentElement;
+  }
+  return !!el && el !== host;
+};
+
+const contentRoot = (host: Element) => {
+  let root: Element | null = null;
+  for (let el = host.parentElement; el; el = el.parentElement) {
+    if (el.localName === 'content-component') root = el;
+  }
+  return root;
 };
 
 const clearScanMarks = (root: Element) => {
@@ -404,7 +425,7 @@ const createHydratingOutlet = (
   twins: Map<unknown, unknown>,
   projector: Type<unknown>,
   forced: WeakSet<Element>,
-  stale: WeakSet<Element>,
+  fallBack: (root: Element) => void,
   injector: Injector,
   projectsContent: boolean
 ) => {
@@ -414,8 +435,10 @@ const createHydratingOutlet = (
   const isServer = isPlatformServer(injector.get(PLATFORM_ID));
   const skipsContent = projectsContent && isServer;
   const host = injector.get(ElementRef).nativeElement as Element;
-  const fallback = signal(false);
-  let slotChecked = false;
+  const fallback = signal(
+    !isServer && host.getAttribute('ngSkipHydration') === ''
+  );
+  let clientDecided = false;
   return {
     twin,
     legacy: (component: any, children: TemplateRef<any> | undefined) =>
@@ -426,31 +449,17 @@ const createHydratingOutlet = (
       block: { children?: { id?: string }[] } | undefined
     ) =>
       untracked(() => {
-        if (slotChecked || !children || !acceptsChildren(twin(component))) {
-          return fallback();
-        }
-        const child = findSlotChild(host, block);
-        if (!child) return false;
-        slotChecked = true;
-        let el = child.parentElement;
-        while (el && el !== host && !SLOT_CLOSING_TAGS.has(el.localName)) {
-          el = el.parentElement;
-        }
-        if (el && el !== host) fallback.set(true);
-        return fallback();
+        if (fallback() || clientDecided) return fallback();
+        clientDecided = !isServer;
+        if (!children || !acceptsChildren(twin(component))) return false;
+        if (!closesSlot(host, block)) return false;
+        fallback.set(true);
+        return true;
       }),
     fellBack: () => untracked(fallback),
     rescan: () => {
-      if (!isServer) return;
-      let root: Element | null = null;
-      for (let el = host.parentElement; el; el = el.parentElement) {
-        if (el.localName === 'content-component') root = el;
-      }
-      if (!root || forced.has(root)) return;
-      stale.add(root);
-      if (root.getAttribute('ngSkipHydration') === 'true') return;
-      clearScanMarks(root);
-      markUnhydratableMarkup(root);
+      const root = isServer ? contentRoot(host) : null;
+      if (root) fallBack(root);
     },
     component: (component: any, children: TemplateRef<any> | undefined) => {
       const target = twin(component);
@@ -487,20 +496,37 @@ export const createBuilderHydration = (
 ): BuilderHydration => {
   const serverDecisions = new WeakMap<Element, boolean>();
   const forced = new WeakSet<Element>();
-  const stale = new WeakSet<Element>();
+  const deferred = new WeakSet<Element>();
+  const rescans = new WeakSet<Element>();
+  const fallBack = (root: Element) => {
+    if (forced.has(root)) return;
+    if (deferred.has(root)) {
+      forced.add(root);
+      root.setAttribute('ngSkipHydration', 'true');
+      return;
+    }
+    if (rescans.has(root)) return;
+    rescans.add(root);
+    queueMicrotask(() => {
+      rescans.delete(root);
+      if (forced.has(root)) return;
+      clearScanMarks(root);
+      markUnhydratableMarkup(root);
+    });
+  };
   return {
     createOutlet: (injector, projectsContent) =>
       createHydratingOutlet(
         twins,
         projector,
         forced,
-        stale,
+        fallBack,
         injector,
         projectsContent
       ),
-    markUnhydratableMarkup: (root) => {
-      if (stale.delete(root)) clearScanMarks(root);
-      markUnhydratableMarkup(root);
+    markUnhydratableMarkup,
+    deferRoot: (host) => {
+      deferred.add(host);
     },
     recordServerDecisions: (host) => {
       const editing = isEditing() || isPreviewing();

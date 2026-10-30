@@ -538,7 +538,7 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
           )
           .replace(
             contentClass,
-            '$&\n  hydrate = input(false, { transform: builderBooleanAttribute });\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  private readonly builderHydration = builderInject(BUILDER_HYDRATION, { optional: true });\n  private readonly builderParentHydrating = builderInject(BUILDER_HYDRATING, { optional: true, skipSelf: true });\n  readonly builderHydrating = createBuilderHydrating(() => isBuilderHydrating({ hydration: this.builderHydration, host: this.builderHostRef.nativeElement, parent: this.builderParentHydrating, nested: this.isNestedRender(), hydrate: this.hydrate(), ssrAbTest: this.isSsrAbTest(), content: this.content() }));\n  ngDoCheck() {\n    if (this.builderIsServer) this.builderHostRef.nativeElement.setAttribute("ngSkipHydration", "true");\n  }\n  ngAfterViewChecked() {\n    const host = this.builderHostRef.nativeElement;\n    const hydration = this.builderHydrating();\n    if (!hydration) {\n      if (!host.hasAttribute("ngSkipHydration")) host.setAttribute("ngSkipHydration", "true");\n    } else if (this.builderIsServer && !hydration.forced(host)) {\n      host.removeAttribute("ngSkipHydration");\n      if (!this.isNestedRender()) hydration.markUnhydratableMarkup(host);\n    }\n  }\n'
+            '$&\n  hydrate = input(false, { transform: builderBooleanAttribute });\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  private readonly builderHydration = builderInject(BUILDER_HYDRATION, { optional: true });\n  private readonly builderParentHydrating = builderInject(BUILDER_HYDRATING, { optional: true, skipSelf: true });\n  readonly builderHydrating = createBuilderHydrating(() => isBuilderHydrating({ hydration: this.builderHydration, host: this.builderHostRef.nativeElement, parent: this.builderParentHydrating, nested: this.isNestedRender(), hydrate: this.hydrate(), ssrAbTest: this.isSsrAbTest(), content: this.content() }));\n  ngDoCheck() {\n    if (!this.builderIsServer) return;\n    this.builderHostRef.nativeElement.setAttribute("ngSkipHydration", "true");\n    if (this.blockRenderer() && !this.isNestedRender()) this.builderHydration?.deferRoot(this.builderHostRef.nativeElement);\n  }\n  ngAfterViewChecked() {\n    const host = this.builderHostRef.nativeElement;\n    const hydration = this.builderHydrating();\n    if (!hydration) {\n      if (!host.hasAttribute("ngSkipHydration")) host.setAttribute("ngSkipHydration", "true");\n    } else if (this.builderIsServer && !hydration.forced(host)) {\n      host.removeAttribute("ngSkipHydration");\n      if (!this.isNestedRender()) hydration.markUnhydratableMarkup(host);\n    }\n  }\n'
           )
           .replace(
             contentConstructor,
@@ -758,7 +758,7 @@ const ANGULAR_BLOCK_RENDERER_PLUGIN = () => ({
         }
         code = code.replace(
           /<blocks\s/,
-          '<blocks [blockRenderer]="isNestedRender() ? undefined : blockRenderer()" '
+          '<blocks [blockRenderer]="isNestedRender() || !builderHydrating() ? undefined : blockRenderer()" '
         );
         addInput('ContentComponent');
         return code;
