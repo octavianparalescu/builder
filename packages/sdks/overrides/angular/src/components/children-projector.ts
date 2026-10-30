@@ -84,7 +84,7 @@ const CELL_CLOSING_TAGS = [
 ];
 
 const SLOT_CLOSING_TAGS = new Set(
-  'a,button,caption,colgroup,dd,dt,form,h1,h2,h3,h4,h5,h6,iframe,li,math,nobr,noembed,noframes,noscript,optgroup,option,p,plaintext,rb,rp,rt,rtc,script,select,style,svg,table,tbody,td,template,textarea,tfoot,th,thead,title,tr,xmp'.split(
+  'button,caption,colgroup,dd,dt,h1,h2,h3,h4,h5,h6,iframe,li,math,nobr,noembed,noframes,noscript,optgroup,option,plaintext,rb,rp,rt,rtc,script,select,style,svg,table,tbody,template,textarea,tfoot,th,thead,title,tr,xmp'.split(
     ','
   )
 );
