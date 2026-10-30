@@ -264,9 +264,20 @@ export const markUnhydratableMarkup = (root: Element) => {
 
 type BuilderHydrationOutlet = ReturnType<typeof createHydratingOutlet>;
 
+const LINK_PASSING_COMPONENTS = new Set([
+  'Builder:Accordion',
+  'Builder: Tabs',
+  'Symbol',
+]);
+
 type BuilderRegistrations = Record<
   string,
-  { component?: unknown; hydrateChildren?: boolean } | undefined
+  | {
+      component?: unknown;
+      hydrateChildren?: boolean;
+      shouldReceiveBuilderProps?: { builderLinkComponent?: boolean };
+    }
+  | undefined
 >;
 
 type BuilderHydratesChildren = (
@@ -284,9 +295,11 @@ export interface BuilderHydration {
   recordServerDecisions: (host: Element) => void;
   serverDecision: (host: Element) => boolean | undefined;
   forced: (host: Element) => boolean;
+  projects: (component: unknown) => boolean;
   eager: (
     block: unknown,
-    registrations: BuilderRegistrations | undefined
+    registrations: BuilderRegistrations | undefined,
+    linkComponent: unknown
   ) => boolean;
 }
 
@@ -321,6 +334,7 @@ export const isBuilderHydrating = ({
   hydrate,
   ssrAbTest,
   content,
+  wrappers,
 }: {
   hydration: BuilderHydration | null;
   host: Element;
@@ -329,6 +343,7 @@ export const isBuilderHydrating = ({
   hydrate: boolean;
   ssrAbTest: boolean | undefined;
   content: { variations?: object } | undefined;
+  wrappers: unknown[];
 }) => {
   if (!hydration) return null;
   const server = hydration.serverDecision(host);
@@ -338,6 +353,7 @@ export const isBuilderHydrating = ({
     content &&
     !ssrAbTest &&
     !Object.keys(content.variations || {}).length &&
+    !wrappers.some(hydration.projects) &&
     !isEditing() &&
     !isPreviewing()
     ? hydration
@@ -477,18 +493,57 @@ export const createBuilderHydration = (
     (safe.has(component) ||
       (typeof name === 'string' &&
         registrations?.[name]?.hydrateChildren === true));
-  const eagerBlocks = new WeakMap<object, boolean>();
-  const holdsLegacyChildren = (
+  const projects = (component: unknown) =>
+    !!component && !acceptsChildren(twins.get(component) ?? component);
+  const eagerBlocks = new WeakMap<object, WeakMap<object, boolean>>();
+  const rendersEagerly = (
     node: any,
-    registrations: BuilderRegistrations | undefined
+    registrations: BuilderRegistrations | undefined,
+    linksProject: boolean
   ): boolean => {
     if (!node || typeof node !== 'object') return false;
     if (Array.isArray(node)) {
-      return node.some((item) => holdsLegacyChildren(item, registrations));
+      return node.some((item) =>
+        rendersEagerly(item, registrations, linksProject)
+      );
     }
     const name = node.component?.name;
-    const component =
-      typeof name === 'string' ? registrations?.[name]?.component : undefined;
+    const registration =
+      typeof name === 'string' ? registrations?.[name] : undefined;
+    const options = node.component?.options;
+    const bindings = Object.keys(node.bindings || {});
+    if (
+      bindings.includes('component.name') ||
+      (name === 'Symbol' &&
+        (!options?.symbol?.content ||
+          bindings.some(
+            (key) =>
+              key === 'component.options.symbol' ||
+              key.startsWith('component.options.symbol.content')
+          )))
+    ) {
+      return true;
+    }
+    if (
+      linksProject &&
+      (node.tagName === 'a' ||
+        node.href ||
+        node.properties?.href ||
+        bindings.includes('href') ||
+        bindings.includes('properties.href') ||
+        (name === 'Core:Button'
+          ? options?.link || bindings.includes('component.options.link')
+          : name === 'Columns'
+            ? options?.columns?.some((column: any) => column?.link) ||
+              bindings.some((key) =>
+                key.startsWith('component.options.columns')
+              )
+            : registration?.shouldReceiveBuilderProps?.builderLinkComponent &&
+              !LINK_PASSING_COMPONENTS.has(name)))
+    ) {
+      return true;
+    }
+    const component = registration?.component;
     if (
       component &&
       node.children?.length &&
@@ -497,7 +552,7 @@ export const createBuilderHydration = (
       return true;
     }
     return Object.keys(node).some((key) =>
-      holdsLegacyChildren(node[key], registrations)
+      rendersEagerly(node[key], registrations, linksProject)
     );
   };
   return {
@@ -524,12 +579,15 @@ export const createBuilderHydration = (
     },
     serverDecision: (host) => serverDecisions.get(host),
     forced: (host) => forced.has(host),
-    eager: (block, registrations) => {
-      if (!block || typeof block !== 'object') return false;
-      let eager = eagerBlocks.get(block);
+    projects,
+    eager: (block, registrations, linkComponent) => {
+      if (!block || typeof block !== 'object' || !registrations) return false;
+      let decided = eagerBlocks.get(registrations);
+      if (!decided) eagerBlocks.set(registrations, (decided = new WeakMap()));
+      let eager = decided.get(block);
       if (eager === undefined) {
-        eager = holdsLegacyChildren(block, registrations);
-        eagerBlocks.set(block, eager);
+        eager = rendersEagerly(block, registrations, projects(linkComponent));
+        decided.set(block, eager);
       }
       return eager;
     },

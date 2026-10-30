@@ -483,9 +483,10 @@ const ANGULAR_CHILDREN_TEMPLATE_SITES = {
  * children are projected as in 0.26.2 and it skips hydration.
  * Content hydrates only with `<builder-content [hydrate]="true">`, and never
  * when it has A/B variations (the browser picks the variant from a cookie, so
- * the server HTML may hold another variant) or in the Visual Editor or a
- * preview (the browser fetches other content than the server). Content that
- * does not hydrate renders its children exactly as before.
+ * the server HTML may hold another variant), in the Visual Editor or a
+ * preview (the browser fetches other content than the server), or with a
+ * `blocksWrapper` or `contentWrapper` that has no `builderChildren` input.
+ * Content that does not hydrate renders its children exactly as before.
  *
  * @type {Plugin}
  */
@@ -541,7 +542,7 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
           )
           .replace(
             contentClass,
-            '$&\n  hydrate = input(false, { transform: builderBooleanAttribute });\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  private readonly builderHydration = builderInject(BUILDER_HYDRATION, { optional: true });\n  private readonly builderParentHydrating = builderInject(BUILDER_HYDRATING, { optional: true, skipSelf: true });\n  readonly builderHydrating = createBuilderHydrating(() => isBuilderHydrating({ hydration: this.builderHydration, host: this.builderHostRef.nativeElement, parent: this.builderParentHydrating, nested: this.isNestedRender(), hydrate: this.hydrate(), ssrAbTest: this.isSsrAbTest(), content: this.content() }));\n  ngDoCheck() {\n    if (this.builderIsServer) this.builderHostRef.nativeElement.setAttribute("ngSkipHydration", "true");\n  }\n  ngAfterViewChecked() {\n    const host = this.builderHostRef.nativeElement;\n    const hydration = this.builderHydrating();\n    if (!hydration) {\n      if (!host.hasAttribute("ngSkipHydration")) host.setAttribute("ngSkipHydration", "true");\n    } else if (this.builderIsServer && !hydration.forced(host)) {\n      host.removeAttribute("ngSkipHydration");\n      if (!this.isNestedRender()) hydration.markUnhydratableMarkup(host);\n    }\n  }\n'
+            '$&\n  hydrate = input(false, { transform: builderBooleanAttribute });\n  private readonly builderHostRef = builderInject(BuilderElementRef);\n  private readonly builderIsServer = isPlatformServer(builderInject(BUILDER_PLATFORM_ID));\n  private readonly builderHydration = builderInject(BUILDER_HYDRATION, { optional: true });\n  private readonly builderParentHydrating = builderInject(BUILDER_HYDRATING, { optional: true, skipSelf: true });\n  readonly builderHydrating = createBuilderHydrating(() => isBuilderHydrating({ hydration: this.builderHydration, host: this.builderHostRef.nativeElement, parent: this.builderParentHydrating, nested: this.isNestedRender(), hydrate: this.hydrate(), ssrAbTest: this.isSsrAbTest(), content: this.content(), wrappers: [this.blocksWrapper(), this.contentWrapper()] }));\n  ngDoCheck() {\n    if (this.builderIsServer) this.builderHostRef.nativeElement.setAttribute("ngSkipHydration", "true");\n  }\n  ngAfterViewChecked() {\n    const host = this.builderHostRef.nativeElement;\n    const hydration = this.builderHydrating();\n    if (!hydration) {\n      if (!host.hasAttribute("ngSkipHydration")) host.setAttribute("ngSkipHydration", "true");\n    } else if (this.builderIsServer && !hydration.forced(host)) {\n      host.removeAttribute("ngSkipHydration");\n      if (!this.isNestedRender()) hydration.markUnhydratableMarkup(host);\n    }\n  }\n'
           )
           .replace(
             contentConstructor,
@@ -707,9 +708,10 @@ const ANGULAR_HYDRATABLE_CHILDREN_PLUGIN = () => ({
  * `ngTemplateOutlet`, context `$implicit: block`) plus the `block` itself, so the
  * app can wrap blocks, e.g. in `@defer (hydrate ...)`, without the SDK
  * depending on a newer Angular. Without it, blocks render as before. It is
- * used only when the content hydrates; a top-level block that holds a
- * component whose children are projected renders without it and skips
- * hydration.
+ * used only when the content hydrates. A top-level block renders without it
+ * and skips hydration when it holds a component whose children are projected,
+ * a link while `linkComponent` has no `builderChildren` input, a
+ * `component.name` binding, or a Symbol whose content is fetched or bound.
  *
  * @type {Plugin}
  */
@@ -768,7 +770,7 @@ const ANGULAR_BLOCK_RENDERER_PLUGIN = () => ({
       }
       return `import { BuilderEagerBlock, injectBuilderHydrating } from "../children-projector";\n${code.replace(
         blocksClass,
-        '$&\n  private readonly builderHydrating = injectBuilderHydrating();\n  protected builderBlockRenderer(block: unknown) {\n    return this.builderHydrating()?.eager(block, this.registeredComponents()) ? BuilderEagerBlock : this.blockRenderer();\n  }\n'
+        '$&\n  private readonly builderHydrating = injectBuilderHydrating();\n  protected builderBlockRenderer(block: unknown) {\n    return this.builderHydrating()?.eager(block, this.registeredComponents(), this.linkComponent()) ? BuilderEagerBlock : this.blockRenderer();\n  }\n'
       )}`;
     },
   },
