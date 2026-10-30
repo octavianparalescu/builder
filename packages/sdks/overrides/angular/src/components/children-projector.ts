@@ -7,6 +7,7 @@ import {
   InjectionToken,
   Injector,
   PLATFORM_ID,
+  VERSION,
   ViewChild,
   ViewContainerRef,
   inject,
@@ -306,19 +307,32 @@ export interface BuilderHydration {
 let reportedSkips: WeakSet<Element> | undefined;
 
 export const reportSkipsInDeferredBlocks = (root: Element) => {
+  if (+VERSION.major < 19 || root.hasAttribute('ngSkipHydration')) return;
   const sections = root.querySelector('blocks .builder-blocks')?.children;
   for (const section of Array.from(sections ?? [])) {
     if (section.localName === 'builder-eager-block') continue;
     const skipped = section.hasAttribute('ngSkipHydration')
-      ? section
-      : section.querySelector('[ngskiphydration]');
-    if (!skipped || (reportedSkips ??= new WeakSet()).has(skipped)) continue;
-    reportedSkips.add(skipped);
-    console.warn(
-      `[builder] <${skipped.localName}> skips hydration inside the deferred top-level block ${
-        section.querySelector('[builder-id]')?.getAttribute('builder-id') ?? ''
-      }: until that block hydrates, its first interaction is lost.`
-    );
+      ? [section]
+      : Array.from(section.querySelectorAll('[ngskiphydration]'));
+    for (const element of skipped) {
+      let outer = element.parentElement;
+      while (
+        outer &&
+        outer !== section &&
+        !outer.hasAttribute('ngSkipHydration')
+      ) {
+        outer = outer.parentElement;
+      }
+      if (outer !== section && element !== section) continue;
+      if ((reportedSkips ??= new WeakSet()).has(element)) continue;
+      reportedSkips.add(element);
+      console.warn(
+        `[builder] <${element.localName}> skips hydration inside the deferred top-level block ${
+          section.querySelector('[builder-id]')?.getAttribute('builder-id') ??
+          ''
+        }: until that block hydrates, its first interaction is lost.`
+      );
+    }
   }
 };
 
@@ -524,7 +538,7 @@ export const createBuilderHydration = (
     if (!node || typeof node !== 'object') return false;
     if (Array.isArray(node)) {
       return node.some((item) =>
-        rendersEagerly(item, registrations, customLinks, isBlock)
+        rendersEagerly(item, registrations, customLinks, true)
       );
     }
     const name = node.component?.name;
@@ -552,10 +566,8 @@ export const createBuilderHydration = (
         (node.tagName === 'a' ||
           node.href ||
           node.properties?.href ||
-          node.linkUrl ||
-          bindings.some((key) =>
-            ['href', 'properties.href', 'linkUrl'].includes(key)
-          ))) ||
+          bindings.includes('href') ||
+          bindings.includes('properties.href'))) ||
         (name === 'Core:Button'
           ? options?.link || bindings.includes('component.options.link')
           : name === 'Columns'
@@ -577,7 +589,7 @@ export const createBuilderHydration = (
       return true;
     }
     return Object.keys(node).some((key) =>
-      rendersEagerly(node[key], registrations, customLinks, key === 'children')
+      rendersEagerly(node[key], registrations, customLinks, false)
     );
   };
   return {
