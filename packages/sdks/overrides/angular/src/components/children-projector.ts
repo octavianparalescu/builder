@@ -326,10 +326,20 @@ export const reportSkipsInDeferredBlocks = (root: Element) => {
       if (outer !== section && element !== section) continue;
       if ((reportedSkips ??= new WeakSet()).has(element)) continue;
       reportedSkips.add(element);
+      const named = (subtree: Element) =>
+        subtree.hasAttribute('builder-id')
+          ? subtree
+          : subtree.querySelector('[builder-id]');
+      const own = named(element);
+      const id = own?.getAttribute('builder-id') ?? '';
+      const copies = Array.from(
+        section.querySelectorAll('[builder-id]')
+      ).filter((candidate) => candidate.getAttribute('builder-id') === id);
       console.warn(
-        `[builder] <${element.localName}> skips hydration inside the deferred top-level block ${
-          section.querySelector('[builder-id]')?.getAttribute('builder-id') ??
-          ''
+        `[builder] <${element.localName}> ${id}${
+          copies.length > 1 ? ` #${copies.indexOf(own!) + 1}` : ''
+        } skips hydration inside the deferred top-level block ${
+          named(section)?.getAttribute('builder-id') ?? ''
         }: until that block hydrates, its first interaction is lost.`
       );
     }
